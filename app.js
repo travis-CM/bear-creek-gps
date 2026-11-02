@@ -617,21 +617,31 @@ function endRound() {
   S.ended = S.ended || Date.now(); save(); S = null; try { localStorage.removeItem(LS_KEY); } catch (e) {} tab = 'hole'; render();
 }
 
-function renderStaticCard() {
-  const cn = S ? S.course : pref.course, cr = C.courses[cn], hl = cr.holes;
+let cardSel = {tee: null, hole: null};
+function toggleSel(k, v) { cardSel[k] = cardSel[k] === v ? null : v; render(); }
+function scorecardTable(cn, selTee, selHole, interactive) {
+  const cr = C.courses[cn], hl = cr.holes;
   const dot = {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33'};
+  const cell = (n, t) => { const r = n === selHole, c = t === selTee; return r && c ? ' class="x2"' : (r || c) ? ' class="x1"' : ''; };
+  const hc = n => interactive ? ` onclick="toggleSel('hole',${n})" style="cursor:pointer"` : '';
   const half = (a, b, lab) => {
     let rows = '';
-    for (let n = a; n <= b; n++) { const h = hl[n - 1]; rows += `<tr><td><b>${n}</b></td><td>${h.par}</td><td>${h.hcp}</td>${TEES.map(t => `<td>${h.yds[t]}</td>`).join('')}</tr>`; }
+    for (let n = a; n <= b; n++) { const h = hl[n - 1], r = n === selHole ? ' class="x1"' : '';
+      rows += `<tr><td${r}${hc(n)}><b>${n}</b></td><td${r}>${h.par}</td><td${r}>${h.hcp}</td>${TEES.map(t => `<td${cell(n, t)}>${h.yds[t]}</td>`).join('')}</tr>`; }
     const s = hl.slice(a - 1, b);
-    return rows + `<tr><th>${lab}</th><th>${s.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th>${s.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>`;
+    return rows + `<tr><th>${lab}</th><th>${s.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${s.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>`;
   };
-  $('#main').innerHTML = `<div class="card"><div class="row">${['West', 'East'].map(c => `<button class="${cn === c ? 'on' : ''}" onclick="${S ? '' : `pref.course='${c}';savePref();`}render()" ${S && S.course !== c ? 'disabled style="opacity:.4"' : ''}>${c}</button>`).join('')}</div>
-    <div class="small mut" style="margin-top:6px">Bear Creek Golf Club — ${cn} course scorecard${S ? '' : ' · no round started'}</div></div>
-  <div class="card" style="padding:6px"><table><tr><th>#</th><th>Par</th><th>Hcp</th>${TEES.map(t => `<th><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${dot[t]};border:1px solid #888"></span><br>${t}</th>`).join('')}</tr>
+  return `<table class="sc"><tr><th>#</th><th>Par</th><th>Hcp</th>${TEES.map(t => `<th${t === selTee ? ' class="x1"' : ''}${interactive ? ` onclick="toggleSel('tee','${t}')" style="cursor:pointer"` : ''}><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${dot[t]};border:1px solid #888"></span><br>${t}</th>`).join('')}</tr>
     ${half(1, 9, 'Out')}${half(10, 18, 'In')}
-    <tr><th>Tot</th><th>${hl.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th>${hl.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>
-    <tr><td class="small mut">R/S</td><td></td><td></td>${TEES.map(t => `<td class="small mut">${esc(cr.rating[t] || '—')}</td>`).join('')}</tr></table></div>
+    <tr><th>Tot</th><th>${hl.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${hl.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>
+    <tr><td class="small mut">R/S</td><td></td><td></td>${TEES.map(t => `<td class="small mut${t === selTee ? ' x1' : ''}">${esc(cr.rating[t] || '—')}</td>`).join('')}</tr></table>`;
+}
+function renderStaticCard() {
+  const cn = S ? S.course : pref.course, cr = C.courses[cn];
+  const pick = cardSel.tee && cardSel.hole ? `<div class="small" style="margin-top:6px">Hole <b>${cardSel.hole}</b> from the <b>${cardSel.tee}</b> tees: <b style="color:var(--acc)">${cr.holes[cardSel.hole - 1].yds[cardSel.tee]} yds</b> · par ${cr.holes[cardSel.hole - 1].par} · hcp ${cr.holes[cardSel.hole - 1].hcp}</div>` : '';
+  $('#main').innerHTML = `<div class="card"><div class="row">${['West', 'East'].map(c => `<button class="${cn === c ? 'on' : ''}" onclick="${S ? '' : `pref.course='${c}';savePref();`}render()" ${S && S.course !== c ? 'disabled style="opacity:.4"' : ''}>${c}</button>`).join('')}</div>
+    <div class="small mut" style="margin-top:6px">Bear Creek Golf Club — ${cn} course scorecard. Tap a tee color and a hole number to highlight them; tap again to clear.</div>${pick}</div>
+  <div class="card" style="padding:6px">${scorecardTable(cn, cardSel.tee, cardSel.hole, true)}</div>
   <div class="card small">${esc(cr.blurb)}</div>`;
 }
 function renderCard() {
@@ -640,7 +650,7 @@ function renderCard() {
   const half = (a, b, lab) => {
     let pr = 0, yd = 0, sc = 0, has = false, rows = '';
     for (let n = a; n <= b; n++) { const h = H(n), r = rel(n); pr += h.par; yd += h.yds[S.tee]; if (r != null && (S.holes[n].done || S.holes[n].adj != null)) { sc += h.par + r; has = true; }
-      rows += `<tr onclick="tab='hole';goHole(${n},false)"><td>${n}</td><td>${h.par}</td><td>${h.hcp}</td><td>${h.yds[S.tee]}</td><td class="${relCls(r)}"><b>${r != null ? h.par + r : ''}</b></td><td class="${relCls(r)}">${r != null ? relStr(r) : ''}</td><td>${fmtDur(holeTime(n))}</td></tr>`; }
+      const cu = n === S.cur && !S.ended ? ' class="curRow"' : ''; rows += `<tr${cu} onclick="tab='hole';goHole(${n},false)"><td><b>${n}</b></td><td>${h.par}</td><td>${h.hcp}</td><td>${h.yds[S.tee]}</td><td class="${relCls(r)}"><b>${r != null ? h.par + r : ''}</b></td><td class="${relCls(r)}">${r != null ? relStr(r) : ''}</td><td>${fmtDur(holeTime(n))}</td></tr>`; }
     return rows + `<tr><th>${lab}</th><th>${pr}</th><th></th><th>${yd}</th><th>${has ? sc : ''}</th><th></th><th></th></tr>`;
   };
   let use = '';
@@ -657,6 +667,7 @@ function renderCard() {
   <div class="card" style="padding:6px"><table><tr><th>#</th><th>Par</th><th>Hcp</th><th>Yds</th><th>Score</th><th>±</th><th>Time</th></tr>${half(1, 9, 'Out')}${half(10, 18, 'In')}</table>
     <div class="small mut" style="padding:6px">Hole time uses GPS arrival → departure when available, otherwise start → "Complete hole". Tap a row to open that hole.</div></div>
   ${use}
+  <div class="card" style="padding:6px"><div class="small mut" style="padding:4px 6px">All tees — your hole (${S.cur}) and tee (${S.tee}) highlighted</div>${scorecardTable(S.course, S.tee, S.ended ? null : S.cur, false)}</div>
   ${S.ended ? '' : `<div class="card"><b>Starting hole</b> <span class="small mut">(shotgun) — currently #${S.order[0]}</span>${startGrid('setStart(N)', S.order[0])}</div>`}
   <div class="card row"><button onclick="shareCard()">📤 Share card</button><button onclick="endRound()" style="background:#5a2620">Finish / new round</button></div>`;
 }
