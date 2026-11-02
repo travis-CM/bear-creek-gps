@@ -1,0 +1,656 @@
+/* Bear Creek GPS — personal golf GPS + scramble scorer */
+'use strict';
+const $ = s => document.querySelector(s);
+const YD = 1.09361;
+const LS_KEY = 'bcgps_round_v1', LS_PHOTO = 'bcgps_photo_v1', LS_PREF = 'bcgps_pref_v1';
+const TEES = ['Black', 'Blue', 'Silver', 'Red'];
+const PACE_MIN = {3: 12, 4: 14, 5: 17}; // target minutes per hole (~4h12m)
+
+let C = null;            // course data
+let S = null;            // round state (persisted)
+let tab = 'hole';
+let viewHole = 1;        // hole being viewed
+let tapMode = 'target';
+let target = null;       // tapped target [lat,lon]
+let gps = null;          // {p:[lat,lon], acc, ts}
+let gpsErr = '';
+let manualMe = null;
+let wx = null, wxTs = 0, wxErr = '';
+let map = null, layers = null, mapHole = null;
+let wakeLock = null;
+let pref = load(LS_PREF) || {course: 'West', tee: 'Blue', mode: 'scramble', players: ['Travis', '', '', ''], start: 1};
+
+function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) {} }
+function savePref() { try { localStorage.setItem(LS_PREF, JSON.stringify(pref)); } catch (e) {} }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])); }
+
+/* ---------------- geometry ---------------- */
+const toRad = d => d * Math.PI / 180, toDeg = r => r * 180 / Math.PI;
+function xy(p, o) { return [(p[1] - o[1]) * 111320 * Math.cos(toRad(o[0])), (p[0] - o[0]) * 110540]; }
+function fromXY(v, o) { return [o[0] + v[1] / 110540, o[1] + v[0] / (111320 * Math.cos(toRad(o[0])))]; }
+function distM(a, b) { const v = xy(b, a); return Math.hypot(v[0], v[1]); }
+function yds(a, b) { return distM(a, b) * YD; }
+function bearing(a, b) { const v = xy(b, a); return (toDeg(Math.atan2(v[0], v[1])) + 360) % 360; }
+function centroid(poly) { let la = 0, lo = 0; poly.forEach(p => { la += p[0]; lo += p[1]; }); return [la / poly.length, lo / poly.length]; }
+function inside(p, poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if ((yi > p[0]) !== (yj > p[0]) && p[1] < (xj - xi) * (p[0] - yi) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+function segDist(p, a, b) { // meters
+  const A = xy(a, p), B = xy(b, p), dx = B[0] - A[0], dy = B[1] - A[1], L = dx * dx + dy * dy;
+  const t = L ? Math.max(0, Math.min(1, -(A[0] * dx + A[1] * dy) / L)) : 0;
+  return Math.hypot(A[0] + t * dx, A[1] + t * dy);
+}
+function lineDist(p, l) { let m = 1e9; for (let i = 0; i < l.length - 1; i++) m = Math.min(m, segDist(p, l[i], l[i + 1])); return m; }
+function polyNear(p, poly) { // nearest distance (m) to polygon boundary, 0 if inside
+  if (inside(p, poly)) return 0;
+  let m = 1e9; for (let i = 0; i < poly.length - 1; i++) m = Math.min(m, segDist(p, poly[i], poly[i + 1])); return m;
+}
+function polyFar(p, poly) { let m = 0; poly.forEach(q => m = Math.max(m, distM(p, q))); return m; }
+// ray from o through t: parametric distances (m) where it crosses polygon edges
+function rayHits(o, t, poly) {
+  const T = xy(t, o), L = Math.hypot(T[0], T[1]); if (!L) return [];
+  const d = [T[0] / L, T[1] / L], hits = [];
+  for (let i = 0; i < poly.length - 1; i++) {
+    const A = xy(poly[i], o), B = xy(poly[i + 1], o), e = [B[0] - A[0], B[1] - A[1]];
+    const den = d[0] * e[1] - d[1] * e[0]; if (Math.abs(den) < 1e-9) continue;
+    const s = (A[0] * e[1] - A[1] * e[0]) / den, u = (A[0] * d[1] - A[1] * d[0]) / den;
+    if (u >= 0 && u <= 1 && s > 0) hits.push(s);
+  }
+  return hits.sort((a, b) => a - b);
+}
+function along(l, metersFromStart) { // point along polyline
+  let rem = metersFromStart;
+  for (let i = 0; i < l.length - 1; i++) {
+    const s = distM(l[i], l[i + 1]);
+    if (rem <= s || i === l.length - 2) { const v = xy(l[i + 1], l[i]), f = s ? rem / s : 0; return fromXY([v[0] * f, v[1] * f], l[i]); }
+    rem -= s;
+  }
+  return l[l.length - 1];
+}
+
+/* ---------------- course helpers ---------------- */
+function holes() { return C.courses[S ? S.course : pref.course].holes; }
+function H(n) { return holes()[n - 1]; }
+function course() { return S ? S.course : pref.course; }
+function tee() { return S ? S.tee : pref.tee; }
+function greenC(h) { return h._gc || (h._gc = centroid(h.green)); }
+function backLine(h) { // from green center back toward tee, extended
+  if (h._bl) return h._bl;
+  const l = h.line.slice().reverse(); l[0] = greenC(h);
+  const a = l[l.length - 2], b = l[l.length - 1], v = xy(b, a), s = Math.hypot(v[0], v[1]) || 1;
+  l.push(fromXY([v[0] / s * 400, v[1] / s * 400], b));
+  return (h._bl = l);
+}
+function teePos(h, t) { return along(backLine(h), (h.yds[t || tee()] || 350) / YD); }
+function pinOf(n) { const st = S && S.holes[n]; return (st && st.pin) || greenC(H(n)); }
+function approachPt(h) { return along(backLine(h), 90 / YD * 1.0); } // ~90 yds out along the line
+function greenAxis(h) { // front/back along approach axis
+  const a = h.line.length > 2 ? h.line[h.line.length - 2] : teePos(h), c = greenC(h);
+  const hits = rayHits(a, c, h.green);
+  const D = distM(a, c);
+  const s0 = hits.length ? hits[0] : D - 10, s1 = hits.length > 1 ? hits[hits.length - 1] : D + 10;
+  const v = xy(c, a), L = Math.hypot(v[0], v[1]), dir = [v[0] / L, v[1] / L];
+  return {a, dir, s0, s1, depthYds: (s1 - s0) * YD};
+}
+function pinFromDepth(h, depthYd, latYd) {
+  const g = greenAxis(h), m = g.s0 + depthYd / YD, r = [g.dir[1], -g.dir[0]], lat = (latYd || 0) / YD;
+  return fromXY([g.dir[0] * m + r[0] * lat, g.dir[1] * m + r[1] * lat], g.a);
+}
+
+/* ---------------- elevation (USGS 3DEP 1 m lidar grid + live fallback) ---------------- */
+let DEM = null;
+async function loadDEM() { try { const buf = await (await fetch('dem.bin')).arrayBuffer(); DEM = new Uint16Array(buf); render(); } catch (e) {} }
+const liveElev = {};
+function elevAt(p) { // feet
+  if (!p) return null;
+  const m = C.dem;
+  if (DEM && p[0] <= m.n && p[0] >= m.s && p[1] >= m.w && p[1] <= m.e) {
+    const r = (m.n - p[0]) / (m.n - m.s) * (m.rows - 1), q = (p[1] - m.w) / (m.e - m.w) * (m.cols - 1);
+    const r0 = Math.min(m.rows - 2, Math.floor(r)), q0 = Math.min(m.cols - 2, Math.floor(q)), fr = r - r0, fq = q - q0;
+    const g = (a, b) => DEM[a * m.cols + b];
+    const v = g(r0, q0) * (1 - fr) * (1 - fq) + g(r0, q0 + 1) * (1 - fr) * fq + g(r0 + 1, q0) * fr * (1 - fq) + g(r0 + 1, q0 + 1) * fr * fq;
+    return (m.base + v * m.scale) * 3.28084;
+  }
+  const key = p[0].toFixed(5) + ',' + p[1].toFixed(5);
+  if (key in liveElev) return liveElev[key];
+  liveElev[key] = null;
+  fetch(`https://epqs.nationalmap.gov/v1/json?x=${p[1]}&y=${p[0]}&wkid=4326&units=Feet&includeDate=false`).then(r => r.json()).then(j => { const v = +j.value; if (v > -1000) { liveElev[key] = v; render(); } }).catch(() => {});
+  return null;
+}
+
+/* ---------------- weather + plays-like ---------------- */
+async function loadWx(force) {
+  if (!force && wx && Date.now() - wxTs < 10 * 60e3) return;
+  const p = me() || greenC(H(1));
+  const u = `https://api.open-meteo.com/v1/forecast?latitude=${p[0].toFixed(4)}&longitude=${p[1].toFixed(4)}` +
+    `&current=temperature_2m,relative_humidity_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,precipitation` +
+    `&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation_probability&daily=sunrise,sunset` +
+    `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FChicago&forecast_days=2`;
+  try { const j = await (await fetch(u)).json(); if (j.current) { wx = j; wxTs = Date.now(); wxErr = ''; } else wxErr = 'weather unavailable'; }
+  catch (e) { wxErr = 'weather offline'; }
+  if (!wx || Date.now() - wxTs > 30 * 60e3) await loadNWS();
+  render();
+}
+async function loadNWS() { // fallback: DFW Airport (KDFW) observation, ~1 mile away
+  try {
+    const p = (await (await fetch('https://api.weather.gov/stations/KDFW/observations/latest')).json()).properties;
+    const v = o => o && o.value != null ? o.value : null, kmh = x => x == null ? 0 : x / 1.609;
+    const t = v(p.temperature), pr = v(p.barometricPressure);
+    if (t == null) return;
+    wx = {current: {temperature_2m: t * 9 / 5 + 32, apparent_temperature: t * 9 / 5 + 32, relative_humidity_2m: Math.round(v(p.relativeHumidity) || 50),
+      surface_pressure: pr ? pr / 100 - 18 : 995, wind_speed_10m: kmh(v(p.windSpeed)), wind_direction_10m: v(p.windDirection) || 0, wind_gusts_10m: kmh(v(p.windGust) || v(p.windSpeed))}, src: 'KDFW'};
+    wxTs = Date.now(); wxErr = '';
+  } catch (e) {}
+}
+function airDensity(tF, hPa, rh) { // kg/m3, moist air
+  const T = (tF - 32) * 5 / 9, es = 6.1078 * Math.pow(10, 7.5 * T / (T + 237.3)), pv = rh / 100 * es, pd = hPa - pv;
+  return (pd * 100) / (287.058 * (T + 273.15)) + (pv * 100) / (461.495 * (T + 273.15));
+}
+const RHO0 = airDensity(70, 1013.25, 50);
+const DIRS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+const compass = d => DIRS[Math.round(d / 22.5) % 16];
+/* Returns {total, slope, air, wind, aim, dh} — all yards except dh (feet) */
+function playsLike(from, to) {
+  const d = yds(from, to); const r = {d, total: d, slope: 0, air: 0, wind: 0, aim: 0, dh: null, head: 0, cross: 0};
+  const e1 = elevAt(from), e2 = elevAt(to);
+  if (e1 != null && e2 != null) { r.dh = e2 - e1; r.slope = r.dh / 3 * (r.dh > 0 ? 1 : 0.9); }
+  if (wx && wx.current && d > 15) {
+    const c = wx.current, rho = airDensity(c.temperature_2m, c.surface_pressure, c.relative_humidity_2m);
+    r.air = d * 0.55 * (rho / RHO0 - 1);
+    const scale = Math.min(1, d / 120); // short shots fly lower and spend less time in the wind
+    const rel = toRad(c.wind_direction_10m - bearing(from, to));
+    r.head = c.wind_speed_10m * Math.cos(rel); r.cross = c.wind_speed_10m * Math.sin(rel);
+    r.wind = (r.head > 0 ? 0.01 : 0.005) * r.head * d * scale;
+    r.aim = r.cross * d * 0.006 * scale; // + = aim right (wind from right)
+  }
+  r.total = d + r.slope + r.air + r.wind;
+  return r;
+}
+function plChips(r) {
+  const f = v => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v));
+  const out = [];
+  if (r.dh != null) out.push(`<span class="chip">${r.dh >= 0 ? '▲' : '▼'} ${Math.abs(Math.round(r.dh))} ft <b>${f(r.slope)}</b></span>`);
+  if (wx) out.push(`<span class="chip">wind <b>${f(r.wind)}</b></span>`, `<span class="chip">air <b>${f(r.air)}</b></span>`);
+  if (Math.abs(r.aim) >= 1.5) out.push(`<span class="chip">aim <b>${Math.round(Math.abs(r.aim))} yd ${r.aim > 0 ? 'right' : 'left'}</b></span>`);
+  return out.join('');
+}
+
+/* ---------------- position ---------------- */
+function onCourse(p) { return p && distM(p, greenC(H(1))) < 3000; }
+function me() {
+  if (manualMe) return manualMe;
+  if (gps && onCourse(gps.p) && Date.now() - gps.ts < 120e3) return gps.p;
+  return null;
+}
+function onThisHole(n, p) { const h = H(n); return p && (lineDist(p, h.line) < 110 || yds(p, greenC(h)) < h.yds[tee()] + 40); }
+function posFor(n) { const m = me(); return m && (manualMe || onThisHole(n, m)) ? m : teePos(H(n)); }
+function posLabel() {
+  if (manualMe) return '📍 Manual position (tap 📍 Me again → GPS)';
+  if (gps && onCourse(gps.p) && !onThisHole(viewHole, gps.p)) return `🛰 You're not on this hole — showing from the ${tee()} tee`;
+  if (gps && onCourse(gps.p)) return `🛰 GPS ±${Math.round(gps.acc * YD)} yd` + (gps.acc > 25 ? ' <span class="warnTxt">(weak)</span>' : '');
+  if (gps) return `🛰 GPS ok but you're off-course → showing from the ${tee()} tee`;
+  return `${gpsErr ? '⚠️ ' + esc(gpsErr) + ' — ' : '🛰 waiting for GPS — '}showing from the ${tee()} tee`;
+}
+let lastRender = 0;
+function startGPS() {
+  if (!navigator.geolocation) { gpsErr = 'GPS not supported'; return; }
+  navigator.geolocation.watchPosition(p => {
+    gps = {p: [p.coords.latitude, p.coords.longitude], acc: p.coords.accuracy, ts: Date.now()}; gpsErr = '';
+    trackHoleByGPS();
+    if (Date.now() - lastRender > 1500) { lastRender = Date.now(); render(); }
+  }, e => { gpsErr = e.code === 1 ? 'Location permission denied' : 'No GPS fix'; render(); },
+  {enableHighAccuracy: true, maximumAge: 2000, timeout: 20000});
+}
+
+/* ---------------- pace / GPS hole tracking ---------------- */
+let gpsCand = null;
+function nearestHole(p) {
+  let best = null, bd = 1e9;
+  holes().forEach(h => { const d = Math.min(lineDist(p, h.line), polyNear(p, h.green) + 5); if (d < bd) { bd = d; best = h.n; } });
+  return bd < 40 ? best : null;
+}
+function trackHoleByGPS() {
+  if (!S || !S.started || S.ended || !gps || !onCourse(gps.p)) return;
+  const n = nearestHole(gps.p); if (!n) return;
+  if (!gpsCand || gpsCand.n !== n) { gpsCand = {n, ts: Date.now()}; return; }
+  if (Date.now() - gpsCand.ts < 30e3) return; // dwell 30 s
+  if (S.gpsHole !== n) {
+    const prev = S.gpsHole;
+    if (prev && S.holes[prev] && !S.holes[prev].gpsOut) S.holes[prev].gpsOut = gpsCand.ts;
+    const st = hs(n); if (!st.gpsIn) st.gpsIn = gpsCand.ts;
+    S.gpsHole = n; save();
+  }
+}
+function hs(n) { return S.holes[n] || (S.holes[n] = {shots: [], adj: null, done: false}); }
+function fmtDur(ms) { if (ms == null || ms < 0) return '—'; const m = Math.floor(ms / 60e3), h = Math.floor(m / 60); return h ? `${h}:${String(m % 60).padStart(2, '0')}` : `${m}m`; }
+function fmtClock(ts) { return ts ? new Date(ts).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}) : '—'; }
+function holeTime(n) {
+  const st = S && S.holes[n]; if (!st) return null;
+  const a = st.gpsIn || st.startTs, b = st.gpsOut || st.endTs || (n === S.cur && !S.ended ? Date.now() : null);
+  return a && b ? b - a : null;
+}
+function paceInfo() { // minutes ahead(-)/behind(+) of a 4:12 pace
+  if (!S || !S.started) return null;
+  let exp = 0, done = 0;
+  S.order.forEach(n => { if (S.holes[n] && S.holes[n].done) { exp += PACE_MIN[H(n).par]; done++; } });
+  const end = S.ended || Date.now(), el = (end - S.started) / 60e3;
+  const cs = S.holes[S.cur], curEl = (!S.ended && cs && cs.startTs && !cs.done) ? (end - cs.startTs) / 60e3 : 0;
+  const credit = S.ended ? 0 : Math.min(PACE_MIN[H(S.cur).par], curEl);
+  return {done, elapsed: el, expected: exp, diff: done ? Math.round(el - exp - credit) : 0};
+}
+
+/* ---------------- scoring ---------------- */
+function counted(st) { return st.shots.filter(s => !s.g || s.g.counts).length; }
+function rel(n) {
+  const st = S && S.holes[n]; if (!st) return null;
+  if (st.adj != null) return st.adj;
+  if (st.done) return counted(st) ? counted(st) - H(n).par : 0;
+  return null;
+}
+function relStr(r) { return r == null ? '—' : r === 0 ? 'E' : (r > 0 ? '+' + r : '−' + Math.abs(r)); }
+function relCls(r) { return r < 0 ? 'under' : r > 0 ? 'over' : ''; }
+function totals() { let r = 0, thru = 0, str = 0; S.order.forEach(n => { const v = rel(n); if (v != null && (S.holes[n].done || S.holes[n].adj != null)) { r += v; thru++; str += H(n).par + v; } }); return {r, thru, str}; }
+function shotType(n, idx, pos) {
+  const h = H(n), st = hs(n), prior = st.shots.slice(0, idx).filter(s => !s.g || s.g.counts).length;
+  if (prior === 0) return h.par === 3 ? 'Tee shot' : 'Drive';
+  if (pos && (inside(pos, h.green) || polyNear(pos, h.green) < 2)) return 'Putt';
+  const d = pos ? yds(pos, pinOf(n)) : null;
+  if (d != null && d < 40) return 'Chip';
+  if (h.par === 5 && prior === 1) return 'Second';
+  return 'Approach';
+}
+function logShot(n, player, type, gimmick) {
+  const st = hs(n), pos = me();
+  const s = {p: player, ts: Date.now(), pos: pos || null, t: type || null};
+  if (gimmick) s.g = gimmick;
+  if (!s.t && !gimmick) s.t = shotType(n, st.shots.length, pos);
+  st.shots.push(s); save(); render();
+}
+function shotDist(n, i) {
+  const st = hs(n), sh = st.shots.filter(s => !s.g || s.g.counts);
+  const k = sh.indexOf(st.shots[i]); if (k < 0 || !sh[k].pos) return null;
+  const nxt = sh[k + 1] ? sh[k + 1].pos : (st.done ? pinOf(n) : null);
+  return nxt ? Math.round(yds(sh[k].pos, nxt)) : null;
+}
+function completeHole() {
+  const n = viewHole, st = hs(n);
+  st.done = true; st.endTs = Date.now(); if (!st.startTs) st.startTs = S.started;
+  if (counted(st)) st.adj = counted(st) - H(n).par; else if (st.adj == null) st.adj = 0;
+  const i = S.order.indexOf(n);
+  if (i === S.order.length - 1) { S.ended = Date.now(); save(); tab = 'card'; render(); return; }
+  const nx = S.order[i + 1]; S.cur = nx; viewHole = nx; target = null;
+  const ns = hs(nx); if (!ns.startTs) ns.startTs = Date.now();
+  save(); render(); fitHole(true);
+}
+
+/* ---------------- dictation ---------------- */
+const NUMW = {one: 1, two: 2, three: 3, four: 4, five: 5, a: 1, single: 1};
+function parseDictation(text, n) {
+  const names = (S.mode === 'scramble' ? S.players : []).map((nm, i) => ({i, k: nm.trim().toLowerCase()})).filter(x => x.k);
+  const findP = seg => {
+    for (const x of names) { const re = new RegExp('\\b' + x.k.replace(/[^a-z0-9 ]/g, '') + "('?s)?\\b"); if (re.test(seg)) return x.i; }
+    for (const x of names) { if (x.k.length >= 3 && new RegExp('\\b' + x.k.slice(0, 3)).test(seg)) return x.i; }
+    if (/\b(me|my|i)\b/.test(seg)) { const t = names.find(x => x.i === 0); if (t) return 0; }
+    return null;
+  };
+  const typ = seg => /\b(drive|drove|tee ?shot|off the tee)\b/.test(seg) ? 'Drive' :
+    /\b(putts?|putted|made it|sank|holed|drained|tap ?in)\b/.test(seg) ? 'Putt' :
+    /\b(chip|chipped|pitch|pitched|bunker shot|sand|flop)\b/.test(seg) ? 'Chip' :
+    /\b(lay ?up|second|layed up|laid up|fairway wood|hybrid)\b/.test(seg) ? 'Second' :
+    /\b(approach|iron|wedge|third|into the green|on the green|hit the green)\b/.test(seg) ? 'Approach' : null;
+  const gim = seg => { const m = seg.match(/\b(mulligan|mully|string|throw|threw|kick|kicked|foot wedge|re-?tee|drop)\b/); if (!m) return null;
+    const w = m[1]; const kind = /mul/.test(w) ? 'Mulligan' : /string/.test(w) ? 'String' : /thr/.test(w) ? 'Throw' : /kick|foot/.test(w) ? 'Kick' : w === 'drop' ? 'Drop' : 'Re-tee';
+    const ft = seg.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(feet|foot|ft|inches|yards)/);
+    return {kind, note: ft ? ft[0] : '', counts: false}; };
+  const out = [];
+  const segs = text.toLowerCase().replace(/[.;!?]/g, ',').split(/,|\bthen\b|\bafter that\b|\bnext\b|\band\b/).filter(s => s && s.trim().length > 1);
+  for (let seg of segs) {
+    seg = seg.trim();
+    const p = findP(seg), g = gim(seg); let t = typ(seg);
+    if (!g && p == null && !t) continue;
+    let count = 1; const cm = seg.match(/\b(two|three|2|3)[ -]?putt/); if (cm) { count = +cm[1] || NUMW[cm[1]]; t = 'Putt'; }
+    if (g) out.push({p, t: null, g});
+    else for (let i = 0; i < count; i++) out.push({p, t});
+  }
+  return out;
+}
+function startDictation() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  openDictateSheet('');
+  if (!SR) { $('#dictStatus').textContent = 'Voice not supported in this browser — tap the text box and use your keyboard mic 🎤.'; return; }
+  try {
+    const r = new SR(); r.lang = 'en-US'; r.interimResults = true; r.continuous = false;
+    $('#dictStatus').textContent = '🎙 Listening… e.g. "Drew drive, Chris approach, Travis two putts"';
+    r.onresult = e => { let t = ''; for (const res of e.results) t += res[0].transcript; $('#dictTxt').value = t; previewDictation(); };
+    r.onerror = e => { $('#dictStatus').textContent = 'Mic error (' + e.error + ') — type or use keyboard mic instead.'; };
+    r.onend = () => { const s = $('#dictStatus'); if (s && /Listening/.test(s.textContent)) s.textContent = 'Done — check the preview, then Add.'; };
+    r.start();
+  } catch (e) { $('#dictStatus').textContent = 'Mic unavailable — type or use keyboard mic.'; }
+}
+function previewDictation() {
+  const items = parseDictation($('#dictTxt').value, viewHole), st = hs(viewHole);
+  let k = counted(st);
+  $('#dictPrev').innerHTML = items.length ? items.map(it => it.g
+    ? `<div class="shot"><span class="n g">G</span><span class="t">${esc(it.g.kind)} ${esc(it.g.note)} — ${it.p != null ? esc(S.players[it.p]) : 'team'}</span></div>`
+    : `<div class="shot"><span class="n">${++k}</span><span class="t">${esc(it.t || '(auto)')} — ${it.p != null ? esc(S.players[it.p]) : (S.mode === 'scramble' ? '<span class="warnTxt">who?</span>' : 'me')}</span></div>`).join('')
+    : '<div class="mut small">Nothing recognized yet. Use player names + drive / approach / chip / putt / mulligan / string.</div>';
+}
+function openDictateSheet(txt) {
+  modal(`<h3 style="margin:0 0 6px">🎙 Dictate shots — Hole ${viewHole}</h3>
+    <div id="dictStatus" class="small mut"></div>
+    <textarea id="dictTxt" rows="3" placeholder="Drew drive, Chris approach, Travis chip, Mike made the putt">${esc(txt)}</textarea>
+    <div id="dictPrev" style="margin:8px 0"></div>
+    <div class="row"><button onclick="closeModal()">Cancel</button><button onclick="startDictation()">🎙 Again</button><button class="pri" onclick="applyDictation()">Add</button></div>`);
+  $('#dictTxt').addEventListener('input', previewDictation); previewDictation();
+}
+function applyDictation() {
+  const items = parseDictation($('#dictTxt').value, viewHole);
+  items.forEach(it => logShot(viewHole, it.p, it.t, it.g));
+  closeModal();
+}
+
+/* ---------------- modal helpers ---------------- */
+function modal(html) { $('#modal').innerHTML = `<div class="modal" onclick="if(event.target===this)closeModal()"><div class="sheet">${html}</div></div>`; }
+function closeModal() { $('#modal').innerHTML = ''; }
+function gimmickSheet() {
+  const pl = S.mode === 'scramble' ? `<label>Whose? (optional)</label><select id="gP"><option value="">Team</option>${S.players.map((p, i) => p ? `<option value="${i}">${esc(p)}</option>` : '').join('')}</select>` : '';
+  modal(`<h3 style="margin:0 0 6px">Scramble gimmick — Hole ${viewHole}</h3>
+    <div class="grid3">${['Mulligan', 'String', 'Throw', 'Kick', 'Re-tee', 'Other'].map(k => `<button class="gk" onclick="document.querySelectorAll('.gk').forEach(b=>b.classList.remove('on'));this.classList.add('on');window._gk='${k}'">${k}</button>`).join('')}</div>
+    ${pl}<label>Note (e.g. "4 ft of string to tap in", "mulligan off the tee")</label><input id="gN">
+    <label><input type="checkbox" id="gC" style="width:auto"> Counts as a stroke</label>
+    <div class="row" style="margin-top:10px"><button onclick="closeModal()">Cancel</button><button class="pri" onclick="addGimmick()">Add</button></div>`);
+  window._gk = 'Mulligan'; document.querySelector('.gk').classList.add('on');
+}
+function addGimmick() {
+  const p = $('#gP') && $('#gP').value !== '' ? +$('#gP').value : null;
+  logShot(viewHole, p, null, {kind: window._gk, note: $('#gN').value.trim(), counts: $('#gC').checked});
+  closeModal();
+}
+
+/* ---------------- map ---------------- */
+function initMap() {
+  if (map) return;
+  map = L.map('map', {zoomControl: false, attributionControl: true, tap: true, maxZoom: 21});
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxNativeZoom: 19, maxZoom: 21, attribution: 'Esri, Maxar · © OpenStreetMap'}).addTo(map);
+  layers = L.layerGroup().addTo(map);
+  map.on('click', e => onMapTap([e.latlng.lat, e.latlng.lng]));
+  map.on('contextmenu', e => { target = [e.latlng.lat, e.latlng.lng]; render(); });
+}
+function onMapTap(p) {
+  if (tapMode === 'target') target = p;
+  else if (tapMode === 'pin') { if (!S) { alert('Start a round to set pins.'); return; } hs(viewHole).pin = p; save(); tapMode = 'target'; }
+  else if (tapMode === 'me') { manualMe = p; tapMode = 'target'; }
+  render();
+}
+function fitHole(force) {
+  if (!map) return;
+  const h = H(viewHole), pts = h.line.concat(h.green).concat([teePos(h)]);
+  const m = me(); if (m && lineDist(m, h.line) < 250) pts.push(m);
+  if (force || mapHole !== viewHole) { map.fitBounds(L.latLngBounds(pts), {padding: [24, 24], maxZoom: 19}); mapHole = viewHole; }
+}
+const icon = (cls, html) => L.divIcon({className: '', html: `<div class="${cls}">${html || ''}</div>`, iconSize: null});
+function drawMap() {
+  initMap(); layers.clearLayers();
+  const h = H(viewHole), pin = pinOf(viewHole), from = posFor(viewHole);
+  (h.fw || []).forEach(f => L.polygon(f, {color: '#7fdc8f', weight: 1, fillOpacity: .05, interactive: false}).addTo(layers));
+  h.hz.forEach(z => L.polygon(z.p, {color: z.t === 'b' ? '#f3dc9b' : '#58a8ff', weight: 2, fillOpacity: .15, interactive: false}).addTo(layers));
+  L.polygon(h.green, {color: '#fff', weight: 2, fillOpacity: .08, interactive: false}).addTo(layers);
+  L.polyline(h.line, {color: '#fff', weight: 1.5, dashArray: '4 6', opacity: .7, interactive: false}).addTo(layers);
+  TEES.forEach(t => { const p = teePos(h, t); L.circleMarker(p, {radius: 5, color: '#000', weight: 1, fillColor: {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33'}[t], fillOpacity: 1, interactive: false}).addTo(layers); });
+  [100, 150, 200, 250].forEach(y => { const p = along(backLine(h), y / YD); if (yds(from, greenC(h)) > y + 10) { L.marker(p, {icon: icon('dot'), interactive: false}).addTo(layers); L.marker(p, {icon: icon('lay', y), interactive: false}).addTo(layers); } });
+  L.marker(pin, {icon: icon('flag', '⛳'), interactive: false}).addTo(layers);
+  L.marker(from, {icon: icon('me'), interactive: false}).addTo(layers);
+  if (gps && onCourse(gps.p) && !manualMe) L.circle(gps.p, {radius: gps.acc, color: '#2f8cff', weight: 1, fillOpacity: .08, interactive: false}).addTo(layers);
+  if (target) {
+    L.polyline([from, target, pin], {color: '#f0b43c', weight: 3, interactive: false}).addTo(layers);
+    L.marker(target, {icon: icon('tgt'), interactive: false}).addTo(layers);
+    const m1 = [(from[0] + target[0]) / 2, (from[1] + target[1]) / 2], m2 = [(target[0] + pin[0]) / 2, (target[1] + pin[1]) / 2];
+    L.marker(m1, {icon: icon('lbl y', Math.round(yds(from, target))), interactive: false}).addTo(layers);
+    L.marker(m2, {icon: icon('lbl', Math.round(yds(target, pin))), interactive: false}).addTo(layers);
+  } else L.polyline([from, pin], {color: '#ffffff', weight: 2, opacity: .6, interactive: false}).addTo(layers);
+  // shots
+  if (S && S.holes[viewHole]) S.holes[viewHole].shots.forEach((s, i) => { if (s.pos && !s.g) L.circleMarker(s.pos, {radius: 4, color: '#fff', weight: 1, fillColor: '#4cc27a', fillOpacity: 1, interactive: false}).addTo(layers); });
+  fitHole(false);
+}
+
+/* ---------------- hazards ---------------- */
+function hazardsFrom(from, h) {
+  const pin = pinOf(h.n), D = distM(from, pin), v = xy(pin, from), L0 = Math.hypot(v[0], v[1]) || 1, u = [v[0] / L0, v[1] / L0];
+  const g = greenC(h), res = [];
+  h.hz.forEach(z => {
+    const c = centroid(z.p), cv = xy(c, from), proj = cv[0] * u[0] + cv[1] * u[1], side = u[0] * cv[1] - u[1] * cv[0];
+    if (proj < -5 || proj > D + 25) return;
+    const reach = polyNear(from, z.p) * YD, carry = polyFar(from, z.p) * YD; if (reach < 3 && inside(from, z.p)) return;
+    const near = distM(c, g) < 35;
+    const lat = Math.abs(side) < 8 ? 'center' : side > 0 ? 'left' : 'right';
+    res.push({name: (z.t === 'b' ? 'Bunker' : 'Water') + ' ' + (near ? (lat === 'center' ? 'front of green' : 'green ' + lat) : lat), reach, carry, t: z.t});
+  });
+  return res.sort((a, b) => a.reach - b.reach).slice(0, 8);
+}
+
+/* ---------------- rendering ---------------- */
+let lastView = '';
+function render() {
+  if (!C) return;
+  const vk = tab + '-' + viewHole + '-' + (S ? (S.preview ? 'p' : 's') : 'n');
+  if (vk !== lastView) { lastView = vk; const m = $('#main'); if (m) setTimeout(() => { m.scrollTop = 0; }, 0); }
+  renderHeader(); renderBanner();
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
+  if (tab === 'hole') renderHole(); else { if (map) { map.remove(); map = null; mapHole = null; } if (tab === 'card') renderCard(); else if (tab === 'pins') renderPins(); else renderInfo(); }
+}
+function renderHeader() {
+  $('#hdrSub').innerHTML = `${course()} · ${tee()} tees${S ? ' · ' + (S.mode === 'scramble' ? 'Scramble' : 'Solo') : ''}`;
+  if (S && S.started) {
+    const t = totals(), pi = paceInfo();
+    $('#clock').innerHTML = `<b>${fmtDur((S.ended || Date.now()) - S.started)}</b> · <span class="${relCls(t.r)}">${relStr(t.thru ? t.r : null)}</span>${t.thru ? ' thru ' + t.thru : ''}<br>hole ${fmtDur(holeTime(S.cur))}${pi && pi.done ? ` · <span class="${pi.diff > 3 ? 'over' : 'under'}">${pi.diff > 0 ? pi.diff + 'm behind' : Math.abs(pi.diff) + 'm ahead'}</span>` : ''}`;
+  } else $('#clock').innerHTML = new Date().toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+}
+function renderBanner() {
+  let html = '';
+  if (S && S.started && !S.ended && S.gpsHole && S.gpsHole !== S.cur && !(S.holes[S.gpsHole] || {}).done && gps && onCourse(gps.p)) {
+    html = `<div class="banner"><span style="flex:1">GPS says you're on hole ${S.gpsHole}</span><button class="sm" onclick="goHole(${S.gpsHole},true)">Switch</button><button class="sm" onclick="S.gpsHole=S.cur;save();render()">✕</button></div>`;
+  }
+  $('#banner').innerHTML = html;
+}
+function goHole(n, makeCur) { viewHole = n; target = null; if (makeCur && S) { S.cur = n; const st = hs(n); if (!st.startTs) st.startTs = Date.now(); save(); } render(); fitHole(true); }
+function stepHole(d) { const ord = S ? S.order : [...Array(18)].map((_, i) => i + 1); const i = ord.indexOf(viewHole); goHole(ord[(i + d + 18) % 18], false); }
+
+function renderHole() {
+  if (!S) { renderSetup(); return; }
+  const n = viewHole, h = H(n), st = hs(n), from = posFor(n), pin = pinOf(n);
+  const fb = (() => { const hits = rayHits(from, pin, h.green); if (inside(from, h.green)) return {f: 0, b: polyFar(from, h.green) * YD}; if (hits.length >= 2) return {f: hits[0] * YD, b: hits[hits.length - 1] * YD}; return {f: polyNear(from, h.green) * YD, b: polyFar(from, h.green) * YD}; })();
+  const pl = playsLike(from, pin), mid = yds(from, pin);
+  let tgtHtml = '';
+  if (target) {
+    const a = playsLike(from, target), b = playsLike(target, pin);
+    tgtHtml = `<div class="card"><div class="row" style="align-items:flex-start"><div><div class="mut small">TO TARGET</div><div style="font-size:30px;font-weight:800">${Math.round(a.d)}<span class="small mut"> yd</span></div><div class="warnTxt" style="font-weight:700">plays ${Math.round(a.total)}</div></div>
+      <div><div class="mut small">TARGET → PIN</div><div style="font-size:30px;font-weight:800">${Math.round(b.d)}<span class="small mut"> yd</span></div><div class="warnTxt" style="font-weight:700">plays ${Math.round(b.total)}</div></div>
+      <button class="sm" style="flex:0" onclick="target=null;render()">✕</button></div><div class="chips">${plChips(a)}</div></div>`;
+  }
+  const hz = hazardsFrom(from, h);
+  const c = wx && wx.current;
+  const wxHtml = c ? (() => { const rel = c.wind_direction_10m - bearing(from, pin) + 180; return `<span class="chip">🌡 <b>${Math.round(c.temperature_2m)}°</b></span><span class="chip">💨 <b>${Math.round(c.wind_speed_10m)}</b> mph ${compass(c.wind_direction_10m)} (gust ${Math.round(c.wind_gusts_10m)}) <span class="windArrow" style="transform:rotate(${rel}deg)">⬆</span> ${pl.head > 2 ? '<b>into</b>' : pl.head < -2 ? '<b>helping</b>' : 'cross'}</span><span class="chip">💧 ${c.relative_humidity_2m}%</span><span class="chip">${Math.round(c.surface_pressure)} hPa</span>`; })() : `<span class="chip">${wxErr || 'loading weather…'}</span>`;
+  const r = rel(n);
+  const order = S.order, idx = order.indexOf(n);
+  const players = S.mode === 'scramble'
+    ? `<div class="mut small" style="margin-top:4px">Whose shot did the team use? (stroke ${counted(st) + 1})</div><div class="players">${S.players.map((p, i) => p ? `<button onclick="logShot(${n},${i})">${esc(p)}</button>` : '').join('')}</div>`
+    : `<div class="players"><button onclick="logShot(${n},null)">+ Shot (${counted(st) + 1})</button><button onclick="logShot(${n},null,null,{kind:'Penalty',note:'',counts:true})">+ Penalty</button></div>`;
+  const shots = st.shots.map((s, i) => {
+    const k = st.shots.slice(0, i + 1).filter(x => !x.g || x.g.counts).length, dd = shotDist(n, i);
+    return s.g ? `<div class="shot"><span class="n g">G</span><span class="t">${esc(s.g.kind)}${s.g.note ? ' — ' + esc(s.g.note) : ''}${s.p != null && S.players[s.p] ? ' · ' + esc(S.players[s.p]) : ''}${s.g.counts ? ' <b>(+1 stroke)</b>' : ''}</span><button class="x" onclick="delShot(${n},${i})">✕</button></div>`
+      : `<div class="shot"><span class="n">${k}</span><span class="t"><select style="width:auto;padding:2px 4px" onchange="hs(${n}).shots[${i}].t=this.value;save()">${['Drive', 'Tee shot', 'Second', 'Approach', 'Chip', 'Putt'].map(o => `<option ${o === s.t ? 'selected' : ''}>${o}</option>`).join('')}</select> ${S.mode === 'scramble' ? '— <b>' + esc(s.p != null ? S.players[s.p] : 'Team') + '</b>' : ''}${dd ? ' <span class="mut">' + dd + ' yd</span>' : ''}</span><button class="x" onclick="delShot(${n},${i})">✕</button></div>`;
+  }).join('');
+  const topHtml = `
+  <div class="holebar"><button onclick="stepHole(-1)">◀</button>
+    <div class="h"><b>Hole ${n}</b> · Par ${h.par} · Hcp ${h.hcp}<div class="small mut">${h.yds[tee()]} yds (${tee()})${n === S.cur ? '' : ` · <a style="color:var(--acc)" onclick="goHole(${n},true)">make current</a>`}</div></div>
+    <button onclick="stepHole(1)">▶</button></div>
+  `;
+  const bodyHtml = `
+  <div class="tapmodes"><button class="sm ${tapMode === 'target' ? 'on' : ''}" onclick="tapMode='target';render()">🎯 Target</button><button class="sm ${tapMode === 'pin' ? 'on' : ''}" onclick="tapMode='pin';render()">⛳ Set pin</button><button class="sm ${tapMode === 'me' ? 'on' : ''}" onclick="if(manualMe){manualMe=null;tapMode='target'}else tapMode='me';render()">📍 ${manualMe ? 'Use GPS' : 'Me'}</button><button class="sm" onclick="fitHole(true)">⤢</button></div>
+  <div class="small mut" style="padding:4px 12px">${posLabel()}${tapMode !== 'target' ? ` — <b class="warnTxt">tap the map to place ${tapMode === 'pin' ? 'the pin' : 'yourself'}</b>` : ' — tap map to measure'}</div>
+  <div class="dist"><div><div class="lab">Front</div><div class="num">${Math.round(fb.f)}</div></div>
+    <div class="mid"><div class="lab">${st.pin ? 'Pin' : 'Middle'}</div><div class="num">${Math.round(mid)}</div><div class="pl">plays ${Math.round(pl.total)}</div></div>
+    <div><div class="lab">Back</div><div class="num">${Math.round(fb.b)}</div></div></div>
+  <div style="padding:0 12px"><div class="chips">${plChips(pl)}</div><div class="chips">${wxHtml}</div></div>
+  ${tgtHtml}
+  ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS AHEAD (reach / carry)</div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="k">/</span> <b>${Math.round(z.carry)}</b></span></div>`).join('')}</div>` : ''}
+  ${h.note ? `<div class="card small">📝 ${esc(h.note)}</div>` : ''}
+  ${S.preview ? `<div class="card"><b>Preview mode</b> — browsing holes only.<button class="pri" style="width:100%;margin-top:8px" onclick="S=null;render()">◀ Back to round setup</button></div>` : `<div class="card">
+    <div class="row"><b style="flex:2">${S.mode === 'scramble' ? '👥 Team shots' : 'Shots'} · Hole ${n}</b><button class="sm" onclick="startDictation()">🎙 Dictate</button>${S.mode === 'scramble' ? '<button class="sm" onclick="gimmickSheet()">🎲 Gimmick</button>' : ''}</div>
+    ${players}
+    <div style="margin-top:8px">${shots || '<div class="mut small">No shots logged yet. Tap a name after each shot (or dictate later).</div>'}</div>
+    <div class="score"><button class="pm" onclick="bump(-1)">−</button><div class="val"><div class="rel ${relCls(r)}">${r == null ? (counted(st) ? relStr(counted(st) - h.par) : 'E') : relStr(r)}</div><div class="small mut">${r != null ? (h.par + r) + ' strokes' : counted(st) ? counted(st) + ' logged' : 'tap ± to override'}${st.adj != null && counted(st) && st.adj !== counted(st) - h.par ? ' · <span class="warnTxt">override</span>' : ''}</div></div><button class="pm" onclick="bump(1)">+</button></div>
+    <button class="pri" style="width:100%;margin-top:10px;padding:14px" onclick="completeHole()">${st.done ? '✓ Completed — save & next' : 'Complete hole ' + n + (idx === order.length - 1 ? ' (finish round)' : '')}</button>
+  </div>`}
+  <div style="height:20px"></div>`;
+  if (!$('#holeTop') || !$('#map')) {
+    if (map) { map.remove(); map = null; mapHole = null; }
+    $('#main').innerHTML = '<div id="holeTop"></div><div id="map"></div><div id="holeBody"></div>';
+  }
+  $('#holeTop').innerHTML = topHtml; $('#holeBody').innerHTML = bodyHtml;
+  const fresh = !map;
+  drawMap();
+  if (fresh) setTimeout(() => { if (map) { map.invalidateSize(); fitHole(true); } }, 80);
+}
+function bump(d) { const n = viewHole, st = hs(n); const base = rel(n) != null ? rel(n) : (counted(st) ? counted(st) - H(n).par : 0); st.adj = base + d; save(); render(); }
+function delShot(n, i) { hs(n).shots.splice(i, 1); save(); render(); }
+
+function renderSetup() {
+  if (map) { map.remove(); map = null; mapHole = null; }
+  const tees = TEES.map(t => `<option ${t === pref.tee ? 'selected' : ''}>${t}</option>`).join('');
+  $('#main').innerHTML = `<div class="card">
+    <h2 style="margin:0 0 4px">New round</h2><div class="mut small">Bear Creek Golf Club · DFW Airport</div>
+    <label>Course</label><div class="row">${['West', 'East'].map(c => `<button class="${pref.course === c ? 'on' : ''}" onclick="pref.course='${c}';savePref();render()">${c}</button>`).join('')}</div>
+    <label>Tee box</label><select onchange="pref.tee=this.value;savePref();render()">${tees}</select>
+    <div class="small mut" style="margin-top:4px">${TEES.map(t => `${t}: ${C.courses[pref.course].holes.reduce((a, h) => a + h.yds[t], 0)} yds`).join(' · ')}<br>Rating/slope ${esc(C.courses[pref.course].rating[pref.tee] || '')}</div>
+    <label>Format</label><div class="row">${[['scramble', '👥 Scramble (4)'], ['solo', '🙋 Just me']].map(([k, v]) => `<button class="${pref.mode === k ? 'on' : ''}" onclick="pref.mode='${k}';savePref();render()">${v}</button>`).join('')}</div>
+    ${pref.mode === 'scramble' ? `<label>Team (names optional — leave blank to skip)</label>${[0, 1, 2, 3].map(i => `<input style="margin-bottom:6px" placeholder="Golfer ${i + 1}" value="${esc(pref.players[i] || '')}" oninput="pref.players[${i}]=this.value;savePref()">`).join('')}` : ''}
+    <label>Starting hole (shotgun start?)</label><select onchange="pref.start=+this.value;savePref()">${[...Array(18)].map((_, i) => `<option value="${i + 1}" ${pref.start === i + 1 ? 'selected' : ''}>Hole ${i + 1}</option>`).join('')}</select>
+    <button class="pri" style="width:100%;margin-top:14px;padding:14px;font-size:17px" onclick="startRound()">▶ Start round</button>
+    <button style="width:100%;margin-top:8px" onclick="previewCourse()">👀 Preview holes without starting</button>
+  </div>
+  <div class="card small mut">Tip: open this once on Wi-Fi before the round, then in Safari tap Share → <b>Add to Home Screen</b> so it opens full-screen. Allow location when asked.</div>`;
+}
+function startRound() {
+  const order = []; for (let i = 0; i < 18; i++) order.push(((pref.start - 1 + i) % 18) + 1);
+  const players = pref.mode === 'scramble' ? pref.players.map(p => (p || '').trim()) : ['Me'];
+  if (pref.mode === 'scramble' && !players.some(p => p)) { players[0] = 'Golfer 1'; players[1] = 'Golfer 2'; players[2] = 'Golfer 3'; players[3] = 'Golfer 4'; }
+  S = {course: pref.course, tee: pref.tee, mode: pref.mode, players, order, started: Date.now(), cur: order[0], holes: {}};
+  hs(order[0]).startTs = S.started; viewHole = order[0]; tab = 'hole'; save(); requestWake(); render(); loadWx(true);
+}
+function previewCourse() {
+  S = {course: pref.course, tee: pref.tee, mode: pref.mode, players: pref.mode === 'scramble' ? pref.players : ['Me'], order: [...Array(18)].map((_, i) => i + 1), started: null, cur: 1, holes: {}, preview: true};
+  viewHole = 1; render();
+}
+function endRound() {
+  if (!confirm('End this round and start a new one? (The current card will be cleared from this phone.)')) return;
+  S = null; localStorage.removeItem(LS_KEY); tab = 'hole'; render();
+}
+
+function renderCard() {
+  if (!S) { $('#main').innerHTML = '<div class="card">Start a round first.</div>'; return; }
+  const t = totals();
+  const half = (a, b, lab) => {
+    let pr = 0, yd = 0, sc = 0, has = false, rows = '';
+    for (let n = a; n <= b; n++) { const h = H(n), r = rel(n); pr += h.par; yd += h.yds[S.tee]; if (r != null && (S.holes[n].done || S.holes[n].adj != null)) { sc += h.par + r; has = true; }
+      rows += `<tr onclick="tab='hole';goHole(${n},false)"><td>${n}</td><td>${h.par}</td><td>${h.hcp}</td><td>${h.yds[S.tee]}</td><td class="${relCls(r)}"><b>${r != null ? h.par + r : ''}</b></td><td class="${relCls(r)}">${r != null ? relStr(r) : ''}</td><td>${fmtDur(holeTime(n))}</td></tr>`; }
+    return rows + `<tr><th>${lab}</th><th>${pr}</th><th></th><th>${yd}</th><th>${has ? sc : ''}</th><th></th><th></th></tr>`;
+  };
+  let use = '';
+  if (S.mode === 'scramble') {
+    const stats = S.players.map(() => ({all: 0, Drive: 0, Approach: 0, Chip: 0, Putt: 0, g: 0}));
+    let team = 0, gims = [];
+    Object.entries(S.holes).forEach(([n, st]) => st.shots.forEach(s => { if (s.g) { gims.push(`#${n} ${s.g.kind}${s.g.note ? ' (' + s.g.note + ')' : ''}${s.p != null ? ' · ' + S.players[s.p] : ''}`); if (s.p != null) stats[s.p].g++; return; } if (s.p == null) { team++; return; } const k = s.t === 'Tee shot' ? 'Drive' : s.t === 'Second' ? 'Approach' : s.t; stats[s.p].all++; if (stats[s.p][k] != null) stats[s.p][k]++; }));
+    use = `<div class="card"><b>Shots used by golfer</b><table><tr><th class="l">Golfer</th><th>Total</th><th>Tee</th><th>Appr</th><th>Chip</th><th>Putt</th><th>Gim</th></tr>${S.players.map((p, i) => p ? `<tr><td class="l">${esc(p)}</td><td><b>${stats[i].all}</b></td><td>${stats[i].Drive}</td><td>${stats[i].Approach}</td><td>${stats[i].Chip}</td><td>${stats[i].Putt}</td><td>${stats[i].g}</td></tr>` : '').join('')}</table>
+      ${gims.length ? `<div class="small" style="margin-top:8px"><b>Gimmicks used (${gims.length}):</b><br>${gims.map(esc).join('<br>')}</div>` : ''}</div>`;
+  }
+  const pi = paceInfo();
+  $('#main').innerHTML = `<div class="card"><div class="row"><div><div class="mut small">${S.course} · ${S.tee} · ${S.mode === 'scramble' ? 'Scramble' : 'Solo'}</div><div style="font-size:28px;font-weight:800" class="${relCls(t.r)}">${t.thru ? relStr(t.r) : 'E'} <span class="small mut">${t.thru ? t.str + ' strokes thru ' + t.thru : ''}</span></div></div></div>
+    <div class="small mut">Started ${fmtClock(S.started)}${S.ended ? ' · finished ' + fmtClock(S.ended) : ''} · elapsed ${fmtDur((S.ended || Date.now()) - (S.started || Date.now()))}${pi && pi.done ? ` · pace target 4:12 → ${pi.diff > 0 ? pi.diff + ' min behind' : Math.abs(pi.diff) + ' min ahead'}` : ''}</div></div>
+  <div class="card" style="padding:6px"><table><tr><th>#</th><th>Par</th><th>Hcp</th><th>Yds</th><th>Score</th><th>±</th><th>Time</th></tr>${half(1, 9, 'Out')}${half(10, 18, 'In')}</table>
+    <div class="small mut" style="padding:6px">Hole time uses GPS arrival → departure when available, otherwise start → "Complete hole". Tap a row to open that hole.</div></div>
+  ${use}
+  <div class="card row"><button onclick="shareCard()">📤 Share card</button><button onclick="endRound()" style="background:#5a2620">End / new round</button></div>`;
+}
+function shareCard() {
+  const t = totals();
+  let s = `Bear Creek ${S.course} (${S.tee}) — ${S.mode === 'scramble' ? 'Scramble: ' + S.players.filter(Boolean).join(', ') : 'Solo'}\n${relStr(t.r)} (${t.str}) thru ${t.thru}\n`;
+  S.order.forEach(n => { const r = rel(n); if (r != null) s += `#${n} par ${H(n).par}: ${H(n).par + r} (${relStr(r)})  ${fmtDur(holeTime(n))}\n`; });
+  if (navigator.share) navigator.share({text: s}).catch(() => {}); else { navigator.clipboard && navigator.clipboard.writeText(s); alert('Copied to clipboard'); }
+}
+
+function renderPins() {
+  const photo = localStorage.getItem(LS_PHOTO);
+  const rows = S ? S.order.map(n => { const st = hs(n), h = H(n), g = greenAxis(h); return `<tr><td><b>${n}</b></td><td>${st.pin ? '✅' : '<span class="mut">mid</span>'}</td><td>${['F', 'M', 'B'].map((k, i) => `<button class="sm" onclick="quickPin(${n},${[0.25, 0.5, 0.75][i]})">${k}</button>`).join(' ')}</td><td class="small mut">${Math.round(g.depthYds)}y deep</td><td><button class="sm" onclick="tab='hole';tapMode='pin';goHole(${n},false)">tap</button> ${st.pin ? `<button class="sm" onclick="hs(${n}).pin=null;save();render()">✕</button>` : ''}</td></tr>`; }).join('') : '';
+  $('#main').innerHTML = `<div class="card"><b>📷 Pin sheet</b><div class="small mut">Snap the pin sheet the starter hands out. It stays on this phone so you can check it on every hole.</div>
+    <button class="pri" style="width:100%;margin-top:8px" onclick="$('#photoIn').click()">${photo ? 'Retake photo' : 'Take photo of pin sheet'}</button>
+    ${photo ? `<a href="${photo}" target="_blank"><img id="photo" src="${photo}" style="margin-top:8px"></a><div class="small mut">Tap photo to open full-size and pinch-zoom.</div>` : ''}</div>
+  ${S ? `<div class="card"><b>Set today's pins</b><div class="small mut">Quick: F / M / B = front, middle, back third of the green. Exact: type them below, or use "tap" to drop the pin on the map. Distances update right away.</div>
+    <table style="margin-top:6px"><tr><th>#</th><th></th><th>Quick</th><th>Green</th><th>Map</th></tr>${rows}</table></div>
+  <div class="card"><b>Type exact pins</b><div class="small mut">One per line: <code>hole  yards-on  [L/R yards]</code><br>e.g. <code>1 22 L4</code> · <code>2 12</code> · <code>3 30 R6</code> · <code>4 18 C</code></div>
+    <textarea id="pinTxt" rows="5" placeholder="1 22 L4&#10;2 12&#10;3 30 R6" oninput="window._pinTxt=this.value">${esc(window._pinTxt || '')}</textarea><button class="pri" style="width:100%;margin-top:8px" onclick="applyPinText()">Apply pins</button>
+    <div id="pinMsg" class="small mut" style="margin-top:6px"></div></div>` : '<div class="card">Start a round to set pins.</div>'}`;
+}
+function quickPin(n, f) { const h = H(n), g = greenAxis(h); hs(n).pin = pinFromDepth(h, g.depthYds * f, 0); save(); render(); }
+function applyPinText() {
+  const lines = $('#pinTxt').value.split(/\n|;/); let ok = 0, bad = [];
+  lines.forEach(l => { const m = l.trim().match(/^#?(\d{1,2})\s*[:.\-)]?\s*(\d{1,2})\s*(?:y|yd|yds|paces)?\s*(?:([LRC])\s*(\d{1,2})?)?/i); if (!m) { if (l.trim()) bad.push(l.trim()); return; }
+    const n = +m[1]; if (n < 1 || n > 18) { bad.push(l.trim()); return; }
+    const side = (m[3] || 'C').toUpperCase(), off = m[4] ? +m[4] : 0;
+    hs(n).pin = pinFromDepth(H(n), +m[2], side === 'L' ? -off : side === 'R' ? off : 0); ok++; });
+  window._pinTxt = $('#pinTxt').value; save(); render(); $('#pinMsg').textContent = `Set ${ok} pin(s).` + (bad.length ? ' Could not read: ' + bad.join(' | ') : '');
+}
+$('#photoIn').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const img = new Image(), url = URL.createObjectURL(f);
+  img.onload = () => { const k = Math.min(1, 1600 / Math.max(img.width, img.height)), cv = document.createElement('canvas'); cv.width = img.width * k; cv.height = img.height * k; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    try { localStorage.setItem(LS_PHOTO, cv.toDataURL('image/jpeg', 0.8)); } catch (er) { alert('Photo too large to store'); } URL.revokeObjectURL(url); render(); };
+  img.src = url; e.target.value = '';
+});
+
+function renderInfo() {
+  const c = wx && wx.current, cr = C.courses[course()];
+  let hourly = '';
+  if (wx && wx.hourly) { const now = Date.now(); const idx = wx.hourly.time.map((t, i) => [new Date(t).getTime(), i]).filter(([t]) => t > now - 3600e3).slice(0, 6);
+    hourly = `<table><tr><th class="l">Time</th><th>°F</th><th>Wind</th><th>Gust</th><th>Rain</th></tr>${idx.map(([t, i]) => `<tr><td class="l">${fmtClock(t)}</td><td>${Math.round(wx.hourly.temperature_2m[i])}</td><td>${Math.round(wx.hourly.wind_speed_10m[i])} ${compass(wx.hourly.wind_direction_10m[i])}</td><td>${Math.round(wx.hourly.wind_gusts_10m[i])}</td><td>${wx.hourly.precipitation_probability[i]}%</td></tr>`).join('')}</table>`; }
+  const rho = c ? airDensity(c.temperature_2m, c.surface_pressure, c.relative_humidity_2m) : null;
+  $('#main').innerHTML = `
+  <div class="card"><b>Weather now</b> <button class="sm" onclick="loadWx(true)">↻</button>
+    ${c ? `<div style="font-size:22px;font-weight:800;margin:4px 0">${Math.round(c.temperature_2m)}°F · wind ${Math.round(c.wind_speed_10m)} mph ${compass(c.wind_direction_10m)}, gusts ${Math.round(c.wind_gusts_10m)}</div>
+    <div class="small mut">Feels ${Math.round(c.apparent_temperature)}° · humidity ${c.relative_humidity_2m}% · pressure ${Math.round(c.surface_pressure)} hPa · air density ${((rho / RHO0 - 1) * 100).toFixed(1)}% vs. standard (70°F, sea level) → ball flies about ${Math.abs((rho / RHO0 - 1) * 55).toFixed(1)}% ${rho > RHO0 ? 'shorter' : 'farther'}${wx.daily ? ' · sunrise ' + wx.daily.sunrise[0].slice(11) : ''}</div>${hourly}` : `<div class="mut">${wxErr || 'Loading…'}</div>`}</div>
+  <div class="card small"><b>How "plays like" is calculated</b><br>
+    • <b>Slope:</b> elevation at you vs. the target from USGS 1-meter lidar; 1 yd per 3 ft uphill (≈0.9 downhill).<br>
+    • <b>Wind:</b> live wind vs. your shot line: +1% per mph into, −0.5% per mph helping, crosswind gives an aim-off. Scaled down for short shots.<br>
+    • <b>Air:</b> temperature, humidity and barometric pressure → air density (≈0.55% distance per 1% density).<br>
+    These are standard rules of thumb (like a slope rangefinder plus weather), not a launch monitor. Trust your eyes on gusty days.</div>
+  <div class="card"><b>${course()} course</b><div class="small">${esc(cr.blurb)}</div>
+    <table style="margin-top:6px"><tr><th class="l">Tee</th><th>Yards</th><th>Rating / Slope</th></tr>${TEES.map(t => `<tr><td class="l">${t}</td><td>${cr.holes.reduce((a, h) => a + h.yds[t], 0)}</td><td>${esc(cr.rating[t] || '')}</td></tr>`).join('')}</table>
+    <div class="small" style="margin-top:6px"><a style="color:var(--acc)" href="tel:+19724563200">📞 Pro shop 972-456-3200</a> · 3500 Bear Creek Ct, DFW Airport, TX<br>
+    <a style="color:var(--acc)" target="_blank" href="https://arcisgolf.com/clubs/bear-creek-golf-club/golf-course">Club website</a> · <a style="color:var(--acc)" target="_blank" href="https://bearcreektxpp.ezlinksgolf.com/index.html#/preSearch">Tee times</a></div></div>
+  <div class="card row">${S ? `<button onclick="endRound()" style="background:#5a2620">End / new round</button>` : ''}<button onclick="requestWake();alert(wakeLock?'Screen will stay on':'Screen-on not supported here')">☀️ Keep screen on</button></div>
+  <div class="card small mut">Map: Esri World Imagery · Hole/green/bunker shapes © OpenStreetMap contributors · Elevation: USGS 3DEP lidar (5 m grid) · Weather: Open-Meteo · Scorecard data: GolfPass / Bear Creek GC. Hole shapes are community-mapped; if a green looks off, drop the pin by tapping it.</div>`;
+}
+
+/* ---------------- wake lock ---------------- */
+async function requestWake() { try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); } } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (S && S.started && !S.ended) requestWake(); loadWx(); render(); } });
+
+/* ---------------- boot ---------------- */
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+(async function boot() {
+  $('#main').innerHTML = '<div class="card">Loading course…</div>';
+  try { C = await (await fetch('course.json')).json(); } catch (e) { $('#main').innerHTML = '<div class="card">Could not load course data. Check your connection and reload.</div>'; return; }
+  loadDEM();
+  S = load(LS_KEY);
+  if (S && S.preview) S = null;
+  if (S) { viewHole = S.cur; if (S.started && !S.ended) requestWake(); }
+  startGPS(); render(); loadWx();
+  setInterval(() => { renderHeader(); loadWx(); }, 15000);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+})();

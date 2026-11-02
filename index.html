@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0f2a1d">
+<title>Bear Creek GPS</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root{--bg:#0f1512;--card:#18211c;--card2:#212c26;--fg:#eef3ef;--mut:#9fb0a6;--acc:#4cc27a;--acc2:#2e8b57;--warn:#f0b43c;--bad:#ef6a5a;--blue:#5aa9ef;--sand:#e9d39a;--line:#2c3a32}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;height:100%}
+body{display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom)}
+button{font:inherit;color:inherit;border:0;background:var(--card2);border-radius:10px;padding:10px 12px;cursor:pointer}
+button:active{filter:brightness(1.3)}
+button.pri{background:var(--acc2);font-weight:600}
+button.sm{padding:6px 9px;font-size:13px;border-radius:8px}
+button.on{background:var(--acc);color:#06150c;font-weight:700}
+input,select,textarea{font:inherit;color:var(--fg);background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:9px 10px;width:100%}
+label{display:block;color:var(--mut);font-size:13px;margin:10px 0 4px}
+header{display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 6px) 12px 6px;background:#0b100d;border-bottom:1px solid var(--line)}
+header img{height:34px;max-width:90px;object-fit:contain}
+header .logoTxt{font-weight:800;letter-spacing:.5px}
+header .grow{flex:1;min-width:0}
+header .clock{font-variant-numeric:tabular-nums;text-align:right;font-size:13px;color:var(--mut)}
+header .clock b{color:var(--fg);font-size:15px}
+main{flex:1;overflow:auto;-webkit-overflow-scrolling:touch}
+nav.tabs{display:flex;background:#0b100d;border-top:1px solid var(--line)}
+nav.tabs button{flex:1;background:none;border-radius:0;padding:11px 4px 12px;color:var(--mut);font-size:13px}
+nav.tabs button.on{color:var(--acc);background:none;font-weight:700}
+.pad{padding:12px}
+.card{background:var(--card);border-radius:14px;padding:12px;margin:10px 12px}
+.row{display:flex;gap:8px;align-items:center}
+.row>*{flex:1}
+.mut{color:var(--mut)}
+.small{font-size:12px}
+#map{height:52vh;min-height:300px;background:#223}
+.holebar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--card)}
+.holebar .h{flex:1;text-align:center}
+.holebar .h b{font-size:20px}
+.dist{display:flex;text-align:center;gap:6px;margin:8px 12px 0}
+.dist>div{flex:1;background:var(--card);border-radius:12px;padding:8px 4px}
+.dist .lab{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
+.dist .num{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+.dist .mid .num{font-size:42px;color:var(--acc)}
+.dist .pl{font-size:13px;color:var(--warn);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.chip{background:var(--card2);border-radius:20px;padding:3px 9px;font-size:12px;color:var(--mut)}
+.chip b{color:var(--fg)}
+.tapmodes{display:flex;gap:6px;padding:8px 12px 0}
+.tapmodes button{flex:1}
+.hz{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:14px}
+.hz:last-child{border:0}
+.hz .k{color:var(--mut)}
+.players{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.players button{padding:14px 6px;font-weight:700;font-size:16px}
+.shot{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:14px}
+.shot .n{width:22px;height:22px;border-radius:50%;background:var(--acc2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex:0 0 22px}
+.shot .n.g{background:var(--warn);color:#000}
+.shot .t{flex:1}
+.shot .x{background:none;color:var(--bad);padding:2px 8px}
+.score{display:flex;align-items:center;gap:10px;margin-top:10px}
+.score .pm{width:58px;height:58px;font-size:30px;font-weight:800;border-radius:50%}
+.score .val{flex:1;text-align:center}
+.score .val .rel{font-size:34px;font-weight:800}
+.under{color:var(--acc)}.over{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{padding:5px 3px;text-align:center;border-bottom:1px solid var(--line)}
+th{color:var(--mut);font-weight:600}
+td.l,th.l{text-align:left}
+.banner{background:var(--warn);color:#000;padding:8px 12px;display:flex;gap:8px;align-items:center;font-weight:600}
+.banner button{background:#0003}
+.modal{position:fixed;inset:0;background:#000a;display:flex;align-items:flex-end;z-index:2000}
+.modal .sheet{background:var(--card);width:100%;max-height:88vh;overflow:auto;border-radius:18px 18px 0 0;padding:16px 14px calc(16px + env(safe-area-inset-bottom))}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.lbl{background:#000b;color:#fff;font-weight:800;font-size:13px;padding:2px 6px;border-radius:6px;white-space:nowrap;transform:translate(-50%,-140%);display:inline-block}
+.lbl.y{background:#f0b43ccc;color:#000}
+.leaflet-div-icon{background:none;border:0}
+.flag{font-size:24px;transform:translate(-4px,-22px);display:inline-block}
+.me{width:16px;height:16px;border-radius:50%;background:#2f8cff;border:3px solid #fff;box-shadow:0 0 0 2px #2f8cff66}
+.tgt{width:18px;height:18px;border-radius:50%;border:3px solid #f0b43c;background:#f0b43c44}
+.dot{width:8px;height:8px;border-radius:50%;background:#fff;border:1px solid #000}
+.lay{color:#fff;font-size:11px;font-weight:700;text-shadow:0 0 3px #000,0 0 3px #000;transform:translate(8px,-7px);display:inline-block}
+#photo{width:100%;border-radius:10px;display:block}
+.warnTxt{color:var(--warn)}
+.hide{display:none!important}
+.windArrow{display:inline-block;transition:transform .3s}
+</style>
+</head>
+<body>
+<header>
+  <img id="logo" src="logo.svg" alt="Bear Creek Golf Club" onerror="this.style.display='none';document.getElementById('logoTxt').style.display='block'">
+  <div id="logoTxt" class="logoTxt" style="display:none">BEAR CREEK</div>
+  <div class="grow small mut" id="hdrSub"></div>
+  <div class="clock" id="clock"></div>
+</header>
+<div id="banner"></div>
+<main id="main"></main>
+<nav class="tabs" id="tabs">
+  <button data-t="hole" class="on">⛳ Hole</button>
+  <button data-t="card">📋 Card</button>
+  <button data-t="pins">📷 Pins</button>
+  <button data-t="info">ℹ️ Info</button>
+</nav>
+<div id="modal"></div>
+<input type="file" id="photoIn" accept="image/*" capture="environment" class="hide">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
