@@ -306,11 +306,19 @@ function rel(n) {
 function relStr(r) { return r == null ? '—' : r === 0 ? 'E' : (r > 0 ? '+' + r : '−' + Math.abs(r)); }
 function relCls(r) { return r < 0 ? 'under' : r > 0 ? 'over' : ''; }
 function totals() { let r = 0, thru = 0, str = 0; S.order.forEach(n => { const v = rel(n); if (v != null && (S.holes[n].done || S.holes[n].manual)) { r += v; thru++; str += H(n).par + v; } }); return {r, thru, str}; }
-function shotType(n, idx, pos) {
+// Each stroke tap = "I'm standing over the ball this shot left me" → s.pos is where that shot FINISHED.
+// A shot starts at the previous counted shot's finish (or the tee for stroke 1).
+function shotStart(n, idx) {
+  const st = hs(n), prev = st.shots.slice(0, idx).filter(s => (!s.g || s.g.counts) && !s.gimme);
+  if (!prev.length) return teePos(H(n));
+  return prev[prev.length - 1].pos || null;
+}
+function shotType(n, idx) {
   const h = H(n), st = hs(n), prior = st.shots.slice(0, idx).filter(s => !s.g || s.g.counts).length;
   if (prior === 0) return h.par === 3 ? 'Tee shot' : 'Drive';
-  if (pos && (inside(pos, h.green) || polyNear(pos, h.green) < 2)) return 'Putt';
-  const d = pos ? yds(pos, pinOf(n)) : null;
+  const start = shotStart(n, idx);
+  if (start && (inside(start, h.green) || polyNear(start, h.green) < 2)) return 'Putt';
+  const d = start ? yds(start, pinOf(n)) : null;
   if (d != null && d < 40) return 'Chip';
   if (h.par === 5 && prior === 1) return 'Second';
   return 'Approach';
@@ -319,14 +327,19 @@ function logShot(n, player, type, gimmick) {
   const st = hs(n), pos = me(); st.manual = false;
   const s = {p: player, ts: Date.now(), pos: pos || null, t: type || null};
   if (gimmick) s.g = gimmick;
-  if (!s.t && !gimmick) s.t = shotType(n, st.shots.length, pos);
+  if (!s.t && !gimmick) s.t = shotType(n, st.shots.length);
   st.shots.push(s); save(); render();
 }
-function shotDist(n, i) {
-  const st = hs(n), sh = st.shots.filter(s => !s.g || s.g.counts);
-  const k = sh.indexOf(st.shots[i]); if (k < 0 || !sh[k].pos) return null;
-  const nxt = sh[k + 1] ? sh[k + 1].pos : (st.done ? pinOf(n) : null);
-  return nxt ? Math.round(yds(sh[k].pos, nxt)) : null;
+function shotDist(n, i) { // {txt} distance this shot travelled: start (tee / previous ball) → where you logged it
+  const st = hs(n), s = st.shots[i];
+  if (s.gimme || (s.g && !s.g.counts)) return null;
+  const start = shotStart(n, i);
+  const isLast = st.done && st.shots.slice(i + 1).every(x => (x.g && !x.g.counts));
+  const end = s.t === 'Putt' && isLast ? pinOf(n) : s.pos;
+  if (!start || !end) return null;
+  const y = yds(start, end);
+  if (s.t === 'Putt') return Math.round(y * 3) + ' ft';
+  return Math.round(y) + ' yd' + (i === st.shots.findIndex(x => !x.g || x.g.counts) ? ' from tee' : '');
 }
 function completeHole() {
   const n = viewHole, st = hs(n);
@@ -465,7 +478,11 @@ function drawMap() {
     L.marker(m2, {icon: icon('lbl', Math.round(yds(target, pin))), interactive: false}).addTo(layers);
   } else L.polyline([from, pin], {color: '#ffffff', weight: 2, opacity: .6, interactive: false}).addTo(layers);
   // shots
-  if (S && S.holes[viewHole]) S.holes[viewHole].shots.forEach((s, i) => { if (s.pos && !s.g) L.circleMarker(s.pos, {radius: 4, color: '#fff', weight: 1, fillColor: '#4cc27a', fillOpacity: 1, interactive: false}).addTo(layers); });
+  if (S && S.holes[viewHole]) { // shot trail: tee → each ball
+    const trail = [teePos(h)];
+    S.holes[viewHole].shots.forEach(s => { if (s.pos && (!s.g || s.g.counts) && !s.gimme) { trail.push(s.pos); L.circleMarker(s.pos, {radius: 5, color: '#fff', weight: 1, fillColor: '#4cc27a', fillOpacity: 1, interactive: false}).addTo(layers); } });
+    if (trail.length > 1) L.polyline(trail, {color: '#4cc27a', weight: 2, dashArray: '2 5', interactive: false}).addTo(layers);
+  }
   fitHole(false);
 }
 
@@ -554,7 +571,7 @@ function renderHole() {
   const shots = st.shots.map((s, i) => {
     const k = st.shots.slice(0, i + 1).filter(x => !x.g || x.g.counts).length, dd = shotDist(n, i);
     return s.g ? `<div class="shot"><span class="n g">G</span><span class="t">${esc(s.g.kind)}${s.g.note ? ' — ' + esc(s.g.note) : ''}${s.p != null && S.players[s.p] ? ' · ' + esc(S.players[s.p]) : ''}${s.g.counts ? ' <b>(+1 stroke)</b>' : ''}</span><button class="x" onclick="delShot(${n},${i})">✕</button></div>`
-      : `<div class="shot"><span class="n">${k}</span><span class="t"><select style="width:auto;padding:2px 4px" onchange="hs(${n}).shots[${i}].t=this.value;save()">${['Drive', 'Tee shot', 'Second', 'Approach', 'Chip', 'Putt'].map(o => `<option ${o === s.t ? 'selected' : ''}>${o}</option>`).join('')}</select> ${s.gimme ? '<b class="warnTxt">Gimme</b> (no one)' : S.mode === 'scramble' ? '— <b>' + esc(s.p != null ? S.players[s.p] : 'Team') + '</b>' : ''}${dd ? ' <span class="mut">' + dd + ' yd</span>' : ''}</span><button class="x" onclick="delShot(${n},${i})">✕</button></div>`;
+      : `<div class="shot"><span class="n">${k}</span><span class="t"><select style="width:auto;padding:2px 4px" onchange="hs(${n}).shots[${i}].t=this.value;save()">${['Drive', 'Tee shot', 'Second', 'Approach', 'Chip', 'Putt'].map(o => `<option ${o === s.t ? 'selected' : ''}>${o}</option>`).join('')}</select> ${s.gimme ? '<b class="warnTxt">Gimme</b> (no one)' : S.mode === 'scramble' ? '— <b>' + esc(s.p != null ? S.players[s.p] : 'Team') + '</b>' : ''}${dd ? ' · <b style="color:var(--acc)">' + dd + '</b>' : ''}</span><button class="x" onclick="delShot(${n},${i})">✕</button></div>`;
   }).join('');
   const topHtml = `
   <div class="holebar"><button onclick="stepHole(-1)">◀</button>
@@ -567,7 +584,7 @@ function renderHole() {
   ${S.preview ? `<div class="card"><b>Preview mode</b> — browsing holes only.<button class="pri" style="width:100%;margin-top:8px" onclick="S=null;render()">◀ Back to round setup</button></div>` : `<div class="card">
     <div class="row"><b style="flex:2">${S.mode === 'scramble' ? '👥 Team shots' : 'Shots'} · Hole ${n}</b><button class="sm" onclick="startDictation()">🎙 Dictate</button>${S.mode === 'scramble' ? '<button class="sm" onclick="gimmickSheet()">🎲 Gimmick</button>' : ''}</div>
     ${players}
-    <div style="margin-top:8px">${shots || '<div class="mut small">No shots logged yet. Tap a name after each shot (or dictate later).</div>'}</div>
+    <div style="margin-top:8px">${shots || '<div class="mut small">No shots yet. After each shot, walk or drive to the ball you are playing next, then tap whose shot it was — the distance is measured from the tee or the last ball.</div>'}</div>
     <div class="score"><button class="pm" onclick="bump(-1)">−</button><div class="val"><div class="rel ${relCls(r)}">${r == null ? 'E' : relStr(r)}</div><div class="small mut">${r != null ? (h.par + r) + ' strokes' : 'tap ± to override'}${st.manual && counted(st) ? ' · <span class="warnTxt">override (' + counted(st) + ' logged)</span>' : ''}</div></div><button class="pm" onclick="bump(1)">+</button></div>
     <button style="width:100%;margin-top:10px;padding:12px;background:#3a3216;color:var(--warn);font-weight:700" onclick="gimme()">👌 Gimme — add the final stroke &amp; close hole ${n}</button>
     <button class="pri" style="width:100%;margin-top:8px;padding:14px" onclick="completeHole()">${st.done ? '✓ Completed — save & next' : 'Complete hole ' + n + (idx === order.length - 1 ? ' (finish round)' : '')}</button>
