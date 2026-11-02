@@ -108,6 +108,7 @@ tr:has(td.x1) td.x1:first-child{box-shadow:inset 3px 0 0 var(--acc)}
   <div id="logoTxt" class="logoTxt" style="display:none">BEAR CREEK</div>
   <div class="grow small mut" id="hdrSub"></div>
   <div class="clock" id="clock"></div>
+  <button class="sm" id="updBtn" onclick="forceUpdate()" title="Update app" style="padding:6px 9px">🔄</button>
 </header>
 <div id="banner"></div>
 <main id="main"></main>
@@ -121,6 +122,6 @@ tr:has(td.x1) td.x1:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 <input type="file" id="photoIn" accept="image/*" capture="environment" class="hide">
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

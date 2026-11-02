@@ -743,6 +743,16 @@ async function requestWake() { try { if ('wakeLock' in navigator) { wakeLock = a
 window.addEventListener('pagehide', () => save());
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') save(); if (document.visibilityState === 'visible') { if (S && S.started && !S.ended) requestWake(); loadWx(true); render(); } });
 
+/* ---------------- manual update ---------------- */
+async function forceUpdate() {
+  const b = $('#updBtn'); if (b) b.textContent = '⏳';
+  try { save(); } catch (e) {}
+  try { await Promise.all(['./', 'index.html', 'app.js', 'course.json', 'sw.js', 'manifest.json'].map(f => fetch(f, {cache: 'reload'}).catch(() => {}))); } catch (e) {}
+  try { if ('caches' in window) { for (const k of await caches.keys()) await caches.delete(k); } } catch (e) {}
+  try { if (navigator.serviceWorker) { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } } catch (e) {}
+  location.replace(location.pathname + '?u=' + Date.now());
+}
+
 /* ---------------- boot ---------------- */
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
 (async function boot() {
