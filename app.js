@@ -65,6 +65,16 @@ function polyNear(p, poly) { // nearest distance (m) to polygon boundary, 0 if i
   if (inside(p, poly)) return 0;
   let m = 1e9; for (let i = 0; i < poly.length - 1; i++) m = Math.min(m, segDist(p, poly[i], poly[i + 1])); return m;
 }
+function nearestPt(p, poly) {
+  let best = null, bd = 1e9;
+  for (let i = 0; i < poly.length - 1; i++) {
+    const A = xy(poly[i], p), B = xy(poly[i + 1], p), dx = B[0] - A[0], dy = B[1] - A[1], L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, -(A[0] * dx + A[1] * dy) / L)) : 0, q = [A[0] + t * dx, A[1] + t * dy], d = Math.hypot(q[0], q[1]);
+    if (d < bd) { bd = d; best = fromXY(q, p); }
+  }
+  return best;
+}
+function farPt(p, poly) { let best = poly[0], bd = 0; poly.forEach(q => { const d = distM(p, q); if (d > bd) { bd = d; best = q; } }); return best; }
 function polyFar(p, poly) { let m = 0; poly.forEach(q => m = Math.max(m, distM(p, q))); return m; }
 // ray from o through t: parametric distances (m) where it crosses polygon edges
 function rayHits(o, t, poly) {
@@ -469,7 +479,8 @@ function hazardsFrom(from, h) {
     const reach = polyNear(from, z.p) * YD, carry = polyFar(from, z.p) * YD; if (reach < 3 && inside(from, z.p)) return;
     const near = distM(c, g) < 35;
     const lat = Math.abs(side) < 8 ? 'center' : side > 0 ? 'left' : 'right';
-    res.push({name: (z.t === 'b' ? 'Bunker' : 'Water') + ' ' + (near ? (lat === 'center' ? 'front of green' : 'green ' + lat) : lat), reach, carry, t: z.t});
+    const rp = nearestPt(from, z.p), cp = farPt(from, z.p);
+    res.push({name: (z.t === 'b' ? 'Bunker' : 'Water') + ' ' + (near ? (lat === 'center' ? 'front of green' : 'green ' + lat) : lat), reach, carry, reachPl: rp ? playsLike(from, rp).total : reach, carryPl: playsLike(from, cp).total, t: z.t});
   });
   return res.sort((a, b) => a.reach - b.reach).slice(0, 8);
 }
@@ -524,7 +535,7 @@ function liveHtml(part) {
     <div><div class="lab">Back</div><div class="num sm2">${Math.round(fb.b)}</div><div class="pl">plays ${Math.round(fb.b + (pl.total - pl.d))}</div></div></div>
   <div style="padding:0 12px"><div class="chips">${plChips(pl)}</div><div class="chips">${wxHtml}</div></div>
   ${tgtHtml}
-  ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS AHEAD (reach / carry)</div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="k">/</span> <b>${Math.round(z.carry)}</b></span></div>`).join('')}</div>` : ''}
+  ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS AHEAD — reach / carry <span class="warnTxt">(plays like)</span></div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="warnTxt">(${Math.round(z.reachPl)})</span> <span class="k">/</span> <b>${Math.round(z.carry)}</b> <span class="warnTxt">(${Math.round(z.carryPl)})</span></span></div>`).join('')}</div>` : ''}
   ${h.note ? `<div class="card small">📝 ${esc(h.note)}</div>` : ''}
 `;
 }
