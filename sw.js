@@ -1,6 +1,6 @@
 // Network-first for the app and data (so updates show up), cache fallback for flaky course signal.
 // Map tiles: cache-first (already-viewed holes still render with no signal).
-const V = 'bcgps-v1';
+const V = 'bcgps-v2';
 self.addEventListener('install', e => { self.skipWaiting(); e.waitUntil(caches.open(V).then(c => c.addAll(['./', 'index.html', 'app.js', 'course.json', 'dem.bin', 'manifest.json', 'icon.svg', 'logo.svg']).catch(() => {}))); });
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', e => {

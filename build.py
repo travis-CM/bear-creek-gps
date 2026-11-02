@@ -41,7 +41,7 @@ SC = {
                    'Blue':  [350,350,409,490,170,505,366,170,358,500,399,346,349,144,485,338,160,382],
                    'Silver':[330,304,335,425,142,445,320,142,335,457,335,346,321,161,442,306,117,355],
                    'Red':   [330,304,335,425,142,445,320,142,335,457,335,325,321,134,442,306,117,355]},
-          'rating': {'Black': '73.3 / 137', 'Blue': '71.3 / 134', 'Silver': '—', 'Red': '68.1 / 123 (W)'},
+          'rating': {'Black': '73.7 / 140', 'Blue': '71.5 / 137 · W 77.6 / 143', 'Silver': '67.9 / 123 · W 74.3 / 136', 'Red': '67.7 / 122 · W 73.9 / 135'},
           'notes': {6: 'Blind tee shot; approach over water.', 7: 'Often called the hardest hole: plays into the prevailing wind with water.', 17: 'Signature hole along the lake.'},
           'blurb': 'Ted Robinson design (1980). Demanding front nine (6 & 7 stand out); back nine opens up. Bermuda fairways.'},
  'East': {'hcp': [7,1,15,9,5,13,17,3,11,8,14,12,6,16,2,4,18,10],
@@ -50,7 +50,7 @@ SC = {
                    'Blue':  [509,392,165,505,360,350,144,380,375,493,355,331,370,165,381,487,152,368],
                    'Silver':[461,340,143,441,360,300,123,348,347,449,338,304,320,137,344,444,126,368],
                    'Red':   [461,340,143,441,318,300,123,348,347,449,338,304,320,137,344,444,126,337]},
-          'rating': {'Black': '73.4 / 138', 'Blue': '71.7 / 133', 'Silver': '—', 'Red': '69.1 / 123 (W)'},
+          'rating': {'Black': '73.6 / 139', 'Blue': '72.0 / 134 · W 78.6 / 143', 'Silver': '69.3 / 128 · W 75.1 / 132', 'Red': '69.0 / 126 · W 74.7 / 131'},
           'notes': {},
           'blurb': 'Ted Robinson design. Considered a touch harder than the West: tighter fairways, smaller greens, 14 of 18 holes dogleg — a target course.'},
 }

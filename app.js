@@ -21,7 +21,21 @@ let wakeLock = null;
 let pref = load(LS_PREF) || {course: 'West', tee: 'Blue', mode: 'scramble', players: ['Travis', '', '', ''], start: 1};
 
 function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
-function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) {} }
+const LS_ROUNDS = 'bcgps_rounds_v1';
+function rounds() { return load(LS_ROUNDS) || {}; }
+function save() { // called after every change (incl. each keystroke in name fields)
+  if (!S || S.preview) return;
+  try {
+    S.updated = Date.now();
+    const r = rounds(); r[S.id] = S;
+    localStorage.setItem(LS_ROUNDS, JSON.stringify(r));
+    localStorage.setItem(LS_KEY, S.id);
+  } catch (e) {}
+}
+function defaultName() { const d = new Date(); return `${pref.mode === 'scramble' ? 'Scramble' : 'Round'} · ${pref.course} · ${d.toLocaleDateString([], {month: 'short', day: 'numeric'})}`; }
+function resumeRound(id) { const r = rounds()[id]; if (!r) return; S = r; viewHole = S.cur; tab = S.ended ? 'card' : 'hole'; save(); requestWake(); render(); fitHole(true); loadWx(true); }
+function deleteRound(id) { const r = rounds(); if (!r[id] || !confirm(`Delete "${r[id].name}" permanently?`)) return; delete r[id]; try { localStorage.setItem(LS_ROUNDS, JSON.stringify(r)); } catch (e) {} if (S && S.id === id) S = null; render(); }
+function roundSummary(r) { let rr = 0, thru = 0; r.order.forEach(n => { const st = r.holes[n]; if (!st) return; const h = C.courses[r.course].holes[n - 1]; const c = st.shots.filter(s => !s.g || s.g.counts).length; const v = st.adj != null ? st.adj : st.done ? (c ? c - h.par : 0) : null; if (v != null && (st.done || st.adj != null)) { rr += v; thru++; } }); return {rr, thru}; }
 function savePref() { try { localStorage.setItem(LS_PREF, JSON.stringify(pref)); } catch (e) {} }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])); }
 
@@ -125,29 +139,50 @@ function elevAt(p) { // feet
 }
 
 /* ---------------- weather + plays-like ---------------- */
+const WX_TTL = 2 * 60e3; // refresh every 2 minutes
+let wxModel = null, wxObs = null, wxLoading = false;
+function combineWx() {
+  const obsFresh = wxObs && Date.now() - wxObs.ts < 40 * 60e3;
+  if (!wxModel && !obsFresh) return;
+  const cur = obsFresh ? Object.assign({}, wxModel ? wxModel.current : {}, wxObs.current) : wxModel.current;
+  if (cur.apparent_temperature == null) cur.apparent_temperature = cur.temperature_2m;
+  wx = {current: cur, hourly: wxModel && wxModel.hourly, daily: wxModel && wxModel.daily,
+        src: obsFresh ? 'DFW Airport (measured)' : 'Open-Meteo model', obsTs: obsFresh ? wxObs.ts : (wxModel && wxModel.ts)};
+}
 async function loadWx(force) {
-  if (!force && wx && Date.now() - wxTs < 10 * 60e3) return;
+  if (wxLoading || (!force && wx && Date.now() - wxTs < WX_TTL)) return;
+  wxLoading = true; window._wxFetches = (window._wxFetches || 0) + 1;
   const p = me() || greenC(H(1));
   const u = `https://api.open-meteo.com/v1/forecast?latitude=${p[0].toFixed(4)}&longitude=${p[1].toFixed(4)}` +
     `&current=temperature_2m,relative_humidity_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,precipitation` +
     `&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation_probability&daily=sunrise,sunset` +
-    `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FChicago&forecast_days=2`;
-  try { const j = await (await fetch(u)).json(); if (j.current) { wx = j; wxTs = Date.now(); wxErr = ''; } else wxErr = 'weather unavailable'; }
-  catch (e) { wxErr = 'weather offline'; }
-  if (!wx || Date.now() - wxTs > 30 * 60e3) await loadNWS();
-  render();
+    `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FChicago&forecast_days=2&_=${Date.now()}`;
+  await Promise.all([
+    fetch(u, {cache: 'no-store'}).then(r => r.json()).then(j => { if (j.current) { j.ts = new Date(j.current.time + ':00-06:00').getTime() || Date.now(); wxModel = j; } }).catch(() => {}),
+    loadNWS()
+  ]);
+  combineWx();
+  if (wx) { wxTs = Date.now(); wxErr = ''; } else wxErr = 'weather offline — retrying';
+  wxLoading = false;
+  const ae = document.activeElement;
+  if (ae && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) { renderHeader(); return; }
+  if (S && (tab === 'hole' || tab === 'info')) render(); else if (tab === 'info') render(); else renderHeader();
 }
-async function loadNWS() { // fallback: DFW Airport (KDFW) observation, ~1 mile away
+async function loadNWS() { // DFW Airport (KDFW) live observation, ~1 mile from the course
   try {
-    const p = (await (await fetch('https://api.weather.gov/stations/KDFW/observations/latest')).json()).properties;
-    const v = o => o && o.value != null ? o.value : null, kmh = x => x == null ? 0 : x / 1.609;
-    const t = v(p.temperature), pr = v(p.barometricPressure);
-    if (t == null) return;
-    wx = {current: {temperature_2m: t * 9 / 5 + 32, apparent_temperature: t * 9 / 5 + 32, relative_humidity_2m: Math.round(v(p.relativeHumidity) || 50),
-      surface_pressure: pr ? pr / 100 - 18 : 995, wind_speed_10m: kmh(v(p.windSpeed)), wind_direction_10m: v(p.windDirection) || 0, wind_gusts_10m: kmh(v(p.windGust) || v(p.windSpeed))}, src: 'KDFW'};
-    wxTs = Date.now(); wxErr = '';
+    const p = (await (await fetch('https://api.weather.gov/stations/KDFW/observations/latest', {cache: 'no-store'})).json()).properties;
+    const v = o => o && o.value != null ? o.value : null, mph = x => x == null ? null : x / 1.609;
+    const t = v(p.temperature); if (t == null) return;
+    const ws = mph(v(p.windSpeed)) || 0, pr = v(p.barometricPressure);
+    const cur = {temperature_2m: t * 9 / 5 + 32, wind_speed_10m: ws, wind_direction_10m: v(p.windDirection) || 0, wind_gusts_10m: mph(v(p.windGust)) || ws};
+    if (v(p.relativeHumidity) != null) cur.relative_humidity_2m = Math.round(v(p.relativeHumidity));
+    if (pr) cur.surface_pressure = pr / 100 - 20; // sea-level → ~560 ft station pressure
+    if (cur.relative_humidity_2m == null && !(wxModel && wxModel.current)) cur.relative_humidity_2m = 50;
+    if (cur.surface_pressure == null && !(wxModel && wxModel.current)) cur.surface_pressure = 995;
+    wxObs = {current: cur, ts: new Date(p.timestamp).getTime()};
   } catch (e) {}
 }
+function wxAge() { if (!wx) return ''; const s = Math.round((Date.now() - wxTs) / 1000); return `Live · ${wx.src} as of ${fmtClock(wx.obsTs)} · checked ${s < 60 ? s + 's' : Math.round(s / 60) + 'm'} ago`; }
 function airDensity(tF, hPa, rh) { // kg/m3, moist air
   const T = (tF - 32) * 5 / 9, es = 6.1078 * Math.pow(10, 7.5 * T / (T + 237.3)), pv = rh / 100 * es, pd = hPa - pv;
   return (pd * 100) / (287.058 * (T + 273.15)) + (pv * 100) / (461.495 * (T + 273.15));
@@ -445,7 +480,7 @@ function render() {
   if (tab === 'hole') renderHole(); else { if (map) { map.remove(); map = null; mapHole = null; } if (tab === 'card') renderCard(); else if (tab === 'pins') renderPins(); else renderInfo(); }
 }
 function renderHeader() {
-  $('#hdrSub').innerHTML = `${course()} · ${tee()} tees${S ? ' · ' + (S.mode === 'scramble' ? 'Scramble' : 'Solo') : ''}`;
+  $('#hdrSub').innerHTML = S && S.name ? `<b style="color:var(--fg)">${esc(S.name)}</b><br>${course()} · ${tee()}` : `${course()} · ${tee()} tees${S ? ' · ' + (S.mode === 'scramble' ? 'Scramble' : 'Solo') : ''}`;
   if (S && S.started) {
     const t = totals(), pi = paceInfo();
     $('#clock').innerHTML = `<b>${fmtDur((S.ended || Date.now()) - S.started)}</b> · <span class="${relCls(t.r)}">${relStr(t.thru ? t.r : null)}</span>${t.thru ? ' thru ' + t.thru : ''}<br>hole ${fmtDur(holeTime(S.cur))}${pi && pi.done ? ` · <span class="${pi.diff > 3 ? 'over' : 'under'}">${pi.diff > 0 ? pi.diff + 'm behind' : Math.abs(pi.diff) + 'm ahead'}</span>` : ''}`;
@@ -475,7 +510,7 @@ function renderHole() {
   }
   const hz = hazardsFrom(from, h);
   const c = wx && wx.current;
-  const wxHtml = c ? (() => { const rel = c.wind_direction_10m - bearing(from, pin) + 180; return `<span class="chip">🌡 <b>${Math.round(c.temperature_2m)}°</b></span><span class="chip">💨 <b>${Math.round(c.wind_speed_10m)}</b> mph ${compass(c.wind_direction_10m)} (gust ${Math.round(c.wind_gusts_10m)}) <span class="windArrow" style="transform:rotate(${rel}deg)">⬆</span> ${pl.head > 2 ? '<b>into</b>' : pl.head < -2 ? '<b>helping</b>' : 'cross'}</span><span class="chip">💧 ${c.relative_humidity_2m}%</span><span class="chip">${Math.round(c.surface_pressure)} hPa</span>`; })() : `<span class="chip">${wxErr || 'loading weather…'}</span>`;
+  const wxHtml = c ? (() => { const rel = c.wind_direction_10m - bearing(from, pin) + 180; return `<span class="chip">🌡 <b>${Math.round(c.temperature_2m)}°</b></span><span class="chip">💨 <b>${Math.round(c.wind_speed_10m)}</b> mph ${compass(c.wind_direction_10m)} (gust ${Math.round(c.wind_gusts_10m)}) <span class="windArrow" style="transform:rotate(${rel}deg)">⬆</span> ${pl.head > 2 ? '<b>into</b>' : pl.head < -2 ? '<b>helping</b>' : 'cross'}</span><span class="chip">💧 ${c.relative_humidity_2m}%</span><span class="chip">${Math.round(c.surface_pressure)} hPa</span><span class="chip">🔄 ${wxAge()}</span>`; })() : `<span class="chip">${wxErr || 'loading weather…'}</span>`;
   const r = rel(n);
   const order = S.order, idx = order.indexOf(n);
   const players = S.mode === 'scramble'
@@ -521,27 +556,41 @@ function renderHole() {
 function bump(d) { const n = viewHole, st = hs(n); const base = rel(n) != null ? rel(n) : (counted(st) ? counted(st) - H(n).par : 0); st.adj = base + d; save(); render(); }
 function delShot(n, i) { hs(n).shots.splice(i, 1); save(); render(); }
 
+function startGrid(action, sel) {
+  return `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px">${[...Array(18)].map((_, i) => `<button class="sm ${sel === i + 1 ? 'on' : ''}" style="padding:10px 0" onclick="${action.replace('N', i + 1)}">${i + 1}</button>`).join('')}</div>`;
+}
+function setStart(n) { // change starting hole mid-round (keeps everything already logged)
+  const order = []; for (let i = 0; i < 18; i++) order.push(((n - 1 + i) % 18) + 1);
+  S.order = order;
+  if (!Object.values(S.holes).some(h => h.done)) { S.cur = n; viewHole = n; const st = hs(n); st.startTs = st.startTs || Date.now(); }
+  save(); render();
+}
 function renderSetup() {
   if (map) { map.remove(); map = null; mapHole = null; }
   const tees = TEES.map(t => `<option ${t === pref.tee ? 'selected' : ''}>${t}</option>`).join('');
   $('#main').innerHTML = `<div class="card">
     <h2 style="margin:0 0 4px">New round</h2><div class="mut small">Bear Creek Golf Club · DFW Airport</div>
+    <label>Round name</label><input placeholder="${esc(defaultName())}" value="${esc(pref.roundName || '')}" oninput="pref.roundName=this.value;savePref()">
     <label>Course</label><div class="row">${['West', 'East'].map(c => `<button class="${pref.course === c ? 'on' : ''}" onclick="pref.course='${c}';savePref();render()">${c}</button>`).join('')}</div>
     <label>Tee box</label><select onchange="pref.tee=this.value;savePref();render()">${tees}</select>
     <div class="small mut" style="margin-top:4px">${TEES.map(t => `${t}: ${C.courses[pref.course].holes.reduce((a, h) => a + h.yds[t], 0)} yds`).join(' · ')}<br>Rating/slope ${esc(C.courses[pref.course].rating[pref.tee] || '')}</div>
     <label>Format</label><div class="row">${[['scramble', '👥 Scramble (4)'], ['solo', '🙋 Just me']].map(([k, v]) => `<button class="${pref.mode === k ? 'on' : ''}" onclick="pref.mode='${k}';savePref();render()">${v}</button>`).join('')}</div>
+    <label>Starting hole — shotgun start? Tap the hole your cart starts on</label>${startGrid('pref.start=N;savePref();render()', pref.start)}
     ${pref.mode === 'scramble' ? `<label>Team (names optional — leave blank to skip)</label>${[0, 1, 2, 3].map(i => `<input style="margin-bottom:6px" placeholder="Golfer ${i + 1}" value="${esc(pref.players[i] || '')}" oninput="pref.players[${i}]=this.value;savePref()">`).join('')}` : ''}
-    <label>Starting hole (shotgun start?)</label><select onchange="pref.start=+this.value;savePref()">${[...Array(18)].map((_, i) => `<option value="${i + 1}" ${pref.start === i + 1 ? 'selected' : ''}>Hole ${i + 1}</option>`).join('')}</select>
     <button class="pri" style="width:100%;margin-top:14px;padding:14px;font-size:17px" onclick="startRound()">▶ Start round</button>
     <button style="width:100%;margin-top:8px" onclick="previewCourse()">👀 Preview holes without starting</button>
   </div>
+  ${(() => { const rs = Object.values(rounds()).sort((x, y) => (y.updated || 0) - (x.updated || 0)); if (!rs.length) return '';
+    return `<div class="card"><b>Saved rounds</b><div class="small mut">Saved on this phone after every tap and keystroke. Resume any time.</div>${rs.map(r => { const sm = roundSummary(r);
+      return `<div class="shot"><span class="t"><b>${esc(r.name)}</b><br><span class="small mut">${r.course} · ${r.tee} · ${new Date(r.started).toLocaleDateString([], {month: 'short', day: 'numeric'})} ${fmtClock(r.started)} · ${sm.thru ? relStr(sm.rr) + ' thru ' + sm.thru : 'not started'} · ${r.ended ? '✅ finished' : '<span class="warnTxt">in progress</span>'}</span></span><button class="sm ${r.ended ? '' : 'pri'}" onclick="resumeRound('${r.id}')">${r.ended ? 'Open' : 'Resume'}</button><button class="x" onclick="deleteRound('${r.id}')">🗑</button></div>`; }).join('')}</div>`; })()}
   <div class="card small mut">Tip: open this once on Wi-Fi before the round, then in Safari tap Share → <b>Add to Home Screen</b> so it opens full-screen. Allow location when asked.</div>`;
 }
 function startRound() {
   const order = []; for (let i = 0; i < 18; i++) order.push(((pref.start - 1 + i) % 18) + 1);
   const players = pref.mode === 'scramble' ? pref.players.map(p => (p || '').trim()) : ['Me'];
   if (pref.mode === 'scramble' && !players.some(p => p)) { players[0] = 'Golfer 1'; players[1] = 'Golfer 2'; players[2] = 'Golfer 3'; players[3] = 'Golfer 4'; }
-  S = {course: pref.course, tee: pref.tee, mode: pref.mode, players, order, started: Date.now(), cur: order[0], holes: {}};
+  S = {id: 'r' + Date.now(), name: (pref.roundName || '').trim() || defaultName(), course: pref.course, tee: pref.tee, mode: pref.mode, players, order, started: Date.now(), cur: order[0], holes: {}};
+  pref.roundName = ''; savePref();
   hs(order[0]).startTs = S.started; viewHole = order[0]; tab = 'hole'; save(); requestWake(); render(); loadWx(true);
 }
 function previewCourse() {
@@ -549,12 +598,29 @@ function previewCourse() {
   viewHole = 1; render();
 }
 function endRound() {
-  if (!confirm('End this round and start a new one? (The current card will be cleared from this phone.)')) return;
-  S = null; localStorage.removeItem(LS_KEY); tab = 'hole'; render();
+  if (!confirm('Finish this round? It stays saved on this phone — you can reopen it from the round list.')) return;
+  S.ended = S.ended || Date.now(); save(); S = null; try { localStorage.removeItem(LS_KEY); } catch (e) {} tab = 'hole'; render();
 }
 
+function renderStaticCard() {
+  const cn = S ? S.course : pref.course, cr = C.courses[cn], hl = cr.holes;
+  const dot = {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33'};
+  const half = (a, b, lab) => {
+    let rows = '';
+    for (let n = a; n <= b; n++) { const h = hl[n - 1]; rows += `<tr><td><b>${n}</b></td><td>${h.par}</td><td>${h.hcp}</td>${TEES.map(t => `<td>${h.yds[t]}</td>`).join('')}</tr>`; }
+    const s = hl.slice(a - 1, b);
+    return rows + `<tr><th>${lab}</th><th>${s.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th>${s.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>`;
+  };
+  $('#main').innerHTML = `<div class="card"><div class="row">${['West', 'East'].map(c => `<button class="${cn === c ? 'on' : ''}" onclick="${S ? '' : `pref.course='${c}';savePref();`}render()" ${S && S.course !== c ? 'disabled style="opacity:.4"' : ''}>${c}</button>`).join('')}</div>
+    <div class="small mut" style="margin-top:6px">Bear Creek Golf Club — ${cn} course scorecard${S ? '' : ' · no round started'}</div></div>
+  <div class="card" style="padding:6px"><table><tr><th>#</th><th>Par</th><th>Hcp</th>${TEES.map(t => `<th><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${dot[t]};border:1px solid #888"></span><br>${t}</th>`).join('')}</tr>
+    ${half(1, 9, 'Out')}${half(10, 18, 'In')}
+    <tr><th>Tot</th><th>${hl.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th>${hl.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>
+    <tr><td class="small mut">R/S</td><td></td><td></td>${TEES.map(t => `<td class="small mut">${esc(cr.rating[t] || '—')}</td>`).join('')}</tr></table></div>
+  <div class="card small">${esc(cr.blurb)}</div>`;
+}
 function renderCard() {
-  if (!S) { $('#main').innerHTML = '<div class="card">Start a round first.</div>'; return; }
+  if (!S || S.preview || !S.started) { renderStaticCard(); return; }
   const t = totals();
   const half = (a, b, lab) => {
     let pr = 0, yd = 0, sc = 0, has = false, rows = '';
@@ -571,12 +637,13 @@ function renderCard() {
       ${gims.length ? `<div class="small" style="margin-top:8px"><b>Gimmicks used (${gims.length}):</b><br>${gims.map(esc).join('<br>')}</div>` : ''}</div>`;
   }
   const pi = paceInfo();
-  $('#main').innerHTML = `<div class="card"><div class="row"><div><div class="mut small">${S.course} · ${S.tee} · ${S.mode === 'scramble' ? 'Scramble' : 'Solo'}</div><div style="font-size:28px;font-weight:800" class="${relCls(t.r)}">${t.thru ? relStr(t.r) : 'E'} <span class="small mut">${t.thru ? t.str + ' strokes thru ' + t.thru : ''}</span></div></div></div>
+  $('#main').innerHTML = `<div class="card"><input value="${esc(S.name || '')}" placeholder="Round name" oninput="S.name=this.value;save();renderHeader()" style="font-weight:700;margin-bottom:8px"><div class="row"><div><div class="mut small">${S.course} · ${S.tee} · ${S.mode === 'scramble' ? 'Scramble' : 'Solo'}</div><div style="font-size:28px;font-weight:800" class="${relCls(t.r)}">${t.thru ? relStr(t.r) : 'E'} <span class="small mut">${t.thru ? t.str + ' strokes thru ' + t.thru : ''}</span></div></div></div>
     <div class="small mut">Started ${fmtClock(S.started)}${S.ended ? ' · finished ' + fmtClock(S.ended) : ''} · elapsed ${fmtDur((S.ended || Date.now()) - (S.started || Date.now()))}${pi && pi.done ? ` · pace target 4:12 → ${pi.diff > 0 ? pi.diff + ' min behind' : Math.abs(pi.diff) + ' min ahead'}` : ''}</div></div>
   <div class="card" style="padding:6px"><table><tr><th>#</th><th>Par</th><th>Hcp</th><th>Yds</th><th>Score</th><th>±</th><th>Time</th></tr>${half(1, 9, 'Out')}${half(10, 18, 'In')}</table>
     <div class="small mut" style="padding:6px">Hole time uses GPS arrival → departure when available, otherwise start → "Complete hole". Tap a row to open that hole.</div></div>
   ${use}
-  <div class="card row"><button onclick="shareCard()">📤 Share card</button><button onclick="endRound()" style="background:#5a2620">End / new round</button></div>`;
+  ${S.ended ? '' : `<div class="card"><b>Starting hole</b> <span class="small mut">(shotgun) — currently #${S.order[0]}</span>${startGrid('setStart(N)', S.order[0])}</div>`}
+  <div class="card row"><button onclick="shareCard()">📤 Share card</button><button onclick="endRound()" style="background:#5a2620">Finish / new round</button></div>`;
 }
 function shareCard() {
   const t = totals();
@@ -621,7 +688,7 @@ function renderInfo() {
     hourly = `<table><tr><th class="l">Time</th><th>°F</th><th>Wind</th><th>Gust</th><th>Rain</th></tr>${idx.map(([t, i]) => `<tr><td class="l">${fmtClock(t)}</td><td>${Math.round(wx.hourly.temperature_2m[i])}</td><td>${Math.round(wx.hourly.wind_speed_10m[i])} ${compass(wx.hourly.wind_direction_10m[i])}</td><td>${Math.round(wx.hourly.wind_gusts_10m[i])}</td><td>${wx.hourly.precipitation_probability[i]}%</td></tr>`).join('')}</table>`; }
   const rho = c ? airDensity(c.temperature_2m, c.surface_pressure, c.relative_humidity_2m) : null;
   $('#main').innerHTML = `
-  <div class="card"><b>Weather now</b> <button class="sm" onclick="loadWx(true)">↻</button>
+  <div class="card"><b>Weather now</b> <span class="small mut">${wxAge()}</span>
     ${c ? `<div style="font-size:22px;font-weight:800;margin:4px 0">${Math.round(c.temperature_2m)}°F · wind ${Math.round(c.wind_speed_10m)} mph ${compass(c.wind_direction_10m)}, gusts ${Math.round(c.wind_gusts_10m)}</div>
     <div class="small mut">Feels ${Math.round(c.apparent_temperature)}° · humidity ${c.relative_humidity_2m}% · pressure ${Math.round(c.surface_pressure)} hPa · air density ${((rho / RHO0 - 1) * 100).toFixed(1)}% vs. standard (70°F, sea level) → ball flies about ${Math.abs((rho / RHO0 - 1) * 55).toFixed(1)}% ${rho > RHO0 ? 'shorter' : 'farther'}${wx.daily ? ' · sunrise ' + wx.daily.sunrise[0].slice(11) : ''}</div>${hourly}` : `<div class="mut">${wxErr || 'Loading…'}</div>`}</div>
   <div class="card small"><b>How "plays like" is calculated</b><br>
@@ -633,13 +700,14 @@ function renderInfo() {
     <table style="margin-top:6px"><tr><th class="l">Tee</th><th>Yards</th><th>Rating / Slope</th></tr>${TEES.map(t => `<tr><td class="l">${t}</td><td>${cr.holes.reduce((a, h) => a + h.yds[t], 0)}</td><td>${esc(cr.rating[t] || '')}</td></tr>`).join('')}</table>
     <div class="small" style="margin-top:6px"><a style="color:var(--acc)" href="tel:+19724563200">📞 Pro shop 972-456-3200</a> · 3500 Bear Creek Ct, DFW Airport, TX<br>
     <a style="color:var(--acc)" target="_blank" href="https://arcisgolf.com/clubs/bear-creek-golf-club/golf-course">Club website</a> · <a style="color:var(--acc)" target="_blank" href="https://bearcreektxpp.ezlinksgolf.com/index.html#/preSearch">Tee times</a></div></div>
-  <div class="card row">${S ? `<button onclick="endRound()" style="background:#5a2620">End / new round</button>` : ''}<button onclick="requestWake();alert(wakeLock?'Screen will stay on':'Screen-on not supported here')">☀️ Keep screen on</button></div>
-  <div class="card small mut">Map: Esri World Imagery · Hole/green/bunker shapes © OpenStreetMap contributors · Elevation: USGS 3DEP lidar (5 m grid) · Weather: Open-Meteo · Scorecard data: GolfPass / Bear Creek GC. Hole shapes are community-mapped; if a green looks off, drop the pin by tapping it.</div>`;
+  <div class="card row">${S ? `<button onclick="endRound()" style="background:#5a2620">Finish / new round</button>` : ''}<button onclick="requestWake();alert(wakeLock?'Screen will stay on':'Screen-on not supported here')">☀️ Keep screen on</button></div>
+  <div class="card small mut">Map: Esri World Imagery · Hole/green/bunker shapes © OpenStreetMap contributors · Elevation: USGS 3DEP lidar (5 m grid) · Weather: Open-Meteo · Scorecard: GolfPass · Rating/slope: 18Birdies (men's; W = women's). Hole shapes are community-mapped; if a green looks off, drop the pin by tapping it.</div>`;
 }
 
 /* ---------------- wake lock ---------------- */
 async function requestWake() { try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); } } catch (e) {} }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (S && S.started && !S.ended) requestWake(); loadWx(); render(); } });
+window.addEventListener('pagehide', () => save());
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') save(); if (document.visibilityState === 'visible') { if (S && S.started && !S.ended) requestWake(); loadWx(true); render(); } });
 
 /* ---------------- boot ---------------- */
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
@@ -647,10 +715,13 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab =
   $('#main').innerHTML = '<div class="card">Loading course…</div>';
   try { C = await (await fetch('course.json')).json(); } catch (e) { $('#main').innerHTML = '<div class="card">Could not load course data. Check your connection and reload.</div>'; return; }
   loadDEM();
-  S = load(LS_KEY);
-  if (S && S.preview) S = null;
+  let cur = null; try { cur = localStorage.getItem(LS_KEY); } catch (e) {}
+  if (cur && cur[0] === '{') { try { const old = JSON.parse(cur); if (old && old.order && !old.preview) { old.id = old.id || 'r' + (old.started || Date.now()); old.name = old.name || 'Round ' + new Date(old.started || Date.now()).toLocaleDateString(); S = old; save(); } } catch (e) {} cur = S ? S.id : null; }
+  S = cur ? (rounds()[cur] || null) : null;
+  if (S && (S.preview || S.ended)) S = null; // finished rounds open from the list
   if (S) { viewHole = S.cur; if (S.started && !S.ended) requestWake(); }
   startGPS(); render(); loadWx();
-  setInterval(() => { renderHeader(); loadWx(); }, 15000);
+  setInterval(renderHeader, 5000);
+  setInterval(() => loadWx(), 20000);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
