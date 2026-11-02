@@ -228,7 +228,7 @@ function posFor(n) { const m = me(); return m && (manualMe || onThisHole(n, m)) 
 function posLabel() {
   if (manualMe) return '📍 Manual position (tap 📍 Me again → GPS)';
   if (gps && onCourse(gps.p) && !onThisHole(viewHole, gps.p)) return `🛰 You're not on this hole — showing from the ${tee()} tee`;
-  if (gps && onCourse(gps.p)) return `🛰 GPS ±${Math.round(gps.acc * YD)} yd` + (gps.acc > 25 ? ' <span class="warnTxt">(weak)</span>' : '');
+  if (gps && onCourse(gps.p)) return `<span class="liveDot"></span><b style="color:var(--acc)">LIVE GPS</b> ±${Math.round(gps.acc * YD)} yd · ${Math.max(0, Math.round((Date.now() - gps.ts) / 1000))}s ago` + (gps.acc > 25 ? ' <span class="warnTxt">(weak)</span>' : '');
   if (gps) return `🛰 GPS ok but you're off-course → showing from the ${tee()} tee`;
   return `${gpsErr ? '⚠️ ' + esc(gpsErr) + ' — ' : '🛰 waiting for GPS — '}showing from the ${tee()} tee`;
 }
@@ -238,9 +238,12 @@ function startGPS() {
   navigator.geolocation.watchPosition(p => {
     gps = {p: [p.coords.latitude, p.coords.longitude], acc: p.coords.accuracy, ts: Date.now()}; gpsErr = '';
     trackHoleByGPS();
-    if (Date.now() - lastRender > 1500) { lastRender = Date.now(); render(); }
-  }, e => { gpsErr = e.code === 1 ? 'Location permission denied' : 'No GPS fix'; render(); },
-  {enableHighAccuracy: true, maximumAge: 2000, timeout: 20000});
+    liveUpdate();
+  }, e => {
+    if (e.code === 1) { gpsErr = 'Location permission denied — enable it for this site in Settings'; render(); return; }
+    if (!gps || Date.now() - gps.ts > 60e3) gpsErr = 'Searching for GPS…';
+    liveUpdate();
+  }, {enableHighAccuracy: true, maximumAge: 0});
 }
 
 /* ---------------- pace / GPS hole tracking ---------------- */
@@ -496,8 +499,7 @@ function renderBanner() {
 function goHole(n, makeCur) { viewHole = n; target = null; if (makeCur && S) { S.cur = n; const st = hs(n); if (!st.startTs) st.startTs = Date.now(); save(); } render(); fitHole(true); }
 function stepHole(d) { const ord = S ? S.order : [...Array(18)].map((_, i) => i + 1); const i = ord.indexOf(viewHole); goHole(ord[(i + d + 18) % 18], false); }
 
-function renderHole() {
-  if (!S) { renderSetup(); return; }
+function liveHtml(part) {
   const n = viewHole, h = H(n), st = hs(n), from = posFor(n), pin = pinOf(n);
   const fb = (() => { const hits = rayHits(from, pin, h.green); if (inside(from, h.green)) return {f: 0, b: polyFar(from, h.green) * YD}; if (hits.length >= 2) return {f: hits[0] * YD, b: hits[hits.length - 1] * YD}; return {f: polyNear(from, h.green) * YD, b: polyFar(from, h.green) * YD}; })();
   const pl = playsLike(from, pin), mid = yds(from, pin);
@@ -511,6 +513,26 @@ function renderHole() {
   const hz = hazardsFrom(from, h);
   const c = wx && wx.current;
   const wxHtml = c ? (() => { const rel = c.wind_direction_10m - bearing(from, pin) + 180; return `<span class="chip">🌡 <b>${Math.round(c.temperature_2m)}°</b></span><span class="chip">💨 <b>${Math.round(c.wind_speed_10m)}</b> mph ${compass(c.wind_direction_10m)} (gust ${Math.round(c.wind_gusts_10m)}) <span class="windArrow" style="transform:rotate(${rel}deg)">⬆</span> ${pl.head > 2 ? '<b>into</b>' : pl.head < -2 ? '<b>helping</b>' : 'cross'}</span><span class="chip">💧 ${c.relative_humidity_2m}%</span><span class="chip">${Math.round(c.surface_pressure)} hPa</span><span class="chip">🔄 ${wxAge()}</span>`; })() : `<span class="chip">${wxErr || 'loading weather…'}</span>`;
+  const gpsOn = !manualMe && gps && onCourse(gps.p) && onThisHole(n, gps.p) && Date.now() - gps.ts < 120e3;
+  if (part === 'top') return `  <div class="dist big" style="margin-top:6px"><div class="mid"><div class="lab">${gpsOn ? '<span class="liveDot"></span>Live distance' : 'Distance'} to ${st.pin ? 'pin' : 'middle'}</div><div class="num">${Math.round(mid)}</div><div class="small mut">yards</div></div>
+    <div class="pls"><div class="lab">Plays like</div><div class="num">${Math.round(pl.total)}</div><div class="small mut">${pl.dh != null ? (pl.dh >= 0 ? '▲' : '▼') + Math.abs(Math.round(pl.dh)) + ' ft · ' : ''}${wx ? 'wind ' + (pl.head > 2 ? 'into' : pl.head < -2 ? 'helping' : 'cross') : 'weather loading'}</div></div></div>
+`;
+  return `  <div class="small mut" style="padding:4px 12px">${posLabel()}${tapMode !== 'target' ? ` — <b class="warnTxt">tap the map to place ${tapMode === 'pin' ? 'the pin' : 'yourself'}</b>` : ' — tap map to measure'}</div>
+  <div class="dist"><div><div class="lab">Front</div><div class="num sm2">${Math.round(fb.f)}</div><div class="pl">plays ${Math.round(fb.f + (pl.total - pl.d))}</div></div>
+    <div><div class="lab">Back</div><div class="num sm2">${Math.round(fb.b)}</div><div class="pl">plays ${Math.round(fb.b + (pl.total - pl.d))}</div></div></div>
+  <div style="padding:0 12px"><div class="chips">${plChips(pl)}</div><div class="chips">${wxHtml}</div></div>
+  ${tgtHtml}
+  ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS AHEAD (reach / carry)</div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="k">/</span> <b>${Math.round(z.carry)}</b></span></div>`).join('')}</div>` : ''}
+  ${h.note ? `<div class="card small">📝 ${esc(h.note)}</div>` : ''}
+`;
+}
+function liveUpdate() { // called on every GPS fix: refresh numbers + map overlays, keep the rest of the screen untouched
+  if (tab !== 'hole' || !S || !$('#live')) return;
+  $('#live').innerHTML = liveHtml(); $('#liveTop').innerHTML = liveHtml('top'); drawMap(); renderBanner();
+}
+function renderHole() {
+  if (!S) { renderSetup(); return; }
+  const n = viewHole, h = H(n), st = hs(n);
   const r = rel(n);
   const order = S.order, idx = order.indexOf(n);
   const players = S.mode === 'scramble'
@@ -528,14 +550,7 @@ function renderHole() {
   `;
   const bodyHtml = `
   <div class="tapmodes"><button class="sm ${tapMode === 'target' ? 'on' : ''}" onclick="tapMode='target';render()">🎯 Target</button><button class="sm ${tapMode === 'pin' ? 'on' : ''}" onclick="tapMode='pin';render()">⛳ Set pin</button><button class="sm ${tapMode === 'me' ? 'on' : ''}" onclick="if(manualMe){manualMe=null;tapMode='target'}else tapMode='me';render()">📍 ${manualMe ? 'Use GPS' : 'Me'}</button><button class="sm" onclick="fitHole(true)">⤢</button></div>
-  <div class="small mut" style="padding:4px 12px">${posLabel()}${tapMode !== 'target' ? ` — <b class="warnTxt">tap the map to place ${tapMode === 'pin' ? 'the pin' : 'yourself'}</b>` : ' — tap map to measure'}</div>
-  <div class="dist"><div><div class="lab">Front</div><div class="num">${Math.round(fb.f)}</div></div>
-    <div class="mid"><div class="lab">${st.pin ? 'Pin' : 'Middle'}</div><div class="num">${Math.round(mid)}</div><div class="pl">plays ${Math.round(pl.total)}</div></div>
-    <div><div class="lab">Back</div><div class="num">${Math.round(fb.b)}</div></div></div>
-  <div style="padding:0 12px"><div class="chips">${plChips(pl)}</div><div class="chips">${wxHtml}</div></div>
-  ${tgtHtml}
-  ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS AHEAD (reach / carry)</div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="k">/</span> <b>${Math.round(z.carry)}</b></span></div>`).join('')}</div>` : ''}
-  ${h.note ? `<div class="card small">📝 ${esc(h.note)}</div>` : ''}
+  <div id="live">${liveHtml()}</div>
   ${S.preview ? `<div class="card"><b>Preview mode</b> — browsing holes only.<button class="pri" style="width:100%;margin-top:8px" onclick="S=null;render()">◀ Back to round setup</button></div>` : `<div class="card">
     <div class="row"><b style="flex:2">${S.mode === 'scramble' ? '👥 Team shots' : 'Shots'} · Hole ${n}</b><button class="sm" onclick="startDictation()">🎙 Dictate</button>${S.mode === 'scramble' ? '<button class="sm" onclick="gimmickSheet()">🎲 Gimmick</button>' : ''}</div>
     ${players}
@@ -544,11 +559,11 @@ function renderHole() {
     <button class="pri" style="width:100%;margin-top:10px;padding:14px" onclick="completeHole()">${st.done ? '✓ Completed — save & next' : 'Complete hole ' + n + (idx === order.length - 1 ? ' (finish round)' : '')}</button>
   </div>`}
   <div style="height:20px"></div>`;
-  if (!$('#holeTop') || !$('#map')) {
+  if (!$('#holeTop') || !$('#map') || !$('#liveTop')) {
     if (map) { map.remove(); map = null; mapHole = null; }
-    $('#main').innerHTML = '<div id="holeTop"></div><div id="map"></div><div id="holeBody"></div>';
+    $('#main').innerHTML = '<div id="holeTop"></div><div id="liveTop"></div><div id="map" style="margin-top:8px"></div><div id="holeBody"></div>';
   }
-  $('#holeTop').innerHTML = topHtml; $('#holeBody').innerHTML = bodyHtml;
+  $('#holeTop').innerHTML = topHtml; $('#liveTop').innerHTML = liveHtml('top'); $('#holeBody').innerHTML = bodyHtml;
   const fresh = !map;
   drawMap();
   if (fresh) setTimeout(() => { if (map) { map.invalidateSize(); fitHole(true); } }, 80);
@@ -722,6 +737,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab =
   if (S) { viewHole = S.cur; if (S.started && !S.ended) requestWake(); }
   startGPS(); render(); loadWx();
   setInterval(renderHeader, 5000);
+  setInterval(liveUpdate, 2000);
   setInterval(() => loadWx(), 20000);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

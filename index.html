@@ -40,15 +40,18 @@ nav.tabs button.on{color:var(--acc);background:none;font-weight:700}
 .row>*{flex:1}
 .mut{color:var(--mut)}
 .small{font-size:12px}
-#map{height:52vh;min-height:300px;background:#223}
-.holebar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--card)}
+#map{height:40vh;min-height:240px;background:#223}
+.holebar{display:flex;align-items:center;gap:8px;padding:5px 12px;background:var(--card)}
 .holebar .h{flex:1;text-align:center}
 .holebar .h b{font-size:20px}
 .dist{display:flex;text-align:center;gap:6px;margin:8px 12px 0}
 .dist>div{flex:1;background:var(--card);border-radius:12px;padding:8px 4px}
 .dist .lab{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
 .dist .num{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
-.dist .mid .num{font-size:42px;color:var(--acc)}
+.dist .mid .num{font-size:44px;color:var(--acc)}
+.dist .pls .num{font-size:44px;font-weight:800;color:var(--warn)}
+.dist .num.sm2{font-size:24px}
+.dist.big>div{padding:10px 4px}
 .dist .pl{font-size:13px;color:var(--warn);font-weight:600}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .chip{background:var(--card2);border-radius:20px;padding:3px 9px;font-size:12px;color:var(--mut)}
@@ -90,6 +93,7 @@ td.l,th.l{text-align:left}
 #photo{width:100%;border-radius:10px;display:block}
 .warnTxt{color:var(--warn)}
 .hide{display:none!important}
+.liveDot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--acc);margin-right:5px;vertical-align:middle;animation:pulse 1.2s infinite}@keyframes pulse{0%{box-shadow:0 0 0 0 #4cc27a99}100%{box-shadow:0 0 0 8px #4cc27a00}}
 .windArrow{display:inline-block;transition:transform .3s}
 </style>
 </head>
