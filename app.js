@@ -287,13 +287,15 @@ function paceInfo() { // minutes ahead(-)/behind(+) of a 4:12 pace
 function counted(st) { return st.shots.filter(s => !s.g || s.g.counts).length; }
 function rel(n) {
   const st = S && S.holes[n]; if (!st) return null;
-  if (st.adj != null) return st.adj;
-  if (st.done) return counted(st) ? counted(st) - H(n).par : 0;
-  return null;
+  const c = counted(st);
+  if (st.manual && st.adj != null) return st.adj;      // ± override wins until shots change
+  if (c) return c - H(n).par;                          // live from logged strokes
+  if (st.adj != null) return st.adj;                   // ± used with no shots logged
+  return st.done ? 0 : null;
 }
 function relStr(r) { return r == null ? '—' : r === 0 ? 'E' : (r > 0 ? '+' + r : '−' + Math.abs(r)); }
 function relCls(r) { return r < 0 ? 'under' : r > 0 ? 'over' : ''; }
-function totals() { let r = 0, thru = 0, str = 0; S.order.forEach(n => { const v = rel(n); if (v != null && (S.holes[n].done || S.holes[n].adj != null)) { r += v; thru++; str += H(n).par + v; } }); return {r, thru, str}; }
+function totals() { let r = 0, thru = 0, str = 0; S.order.forEach(n => { const v = rel(n); if (v != null && (S.holes[n].done || S.holes[n].manual)) { r += v; thru++; str += H(n).par + v; } }); return {r, thru, str}; }
 function shotType(n, idx, pos) {
   const h = H(n), st = hs(n), prior = st.shots.slice(0, idx).filter(s => !s.g || s.g.counts).length;
   if (prior === 0) return h.par === 3 ? 'Tee shot' : 'Drive';
@@ -304,7 +306,7 @@ function shotType(n, idx, pos) {
   return 'Approach';
 }
 function logShot(n, player, type, gimmick) {
-  const st = hs(n), pos = me();
+  const st = hs(n), pos = me(); st.manual = false;
   const s = {p: player, ts: Date.now(), pos: pos || null, t: type || null};
   if (gimmick) s.g = gimmick;
   if (!s.t && !gimmick) s.t = shotType(n, st.shots.length, pos);
@@ -319,7 +321,7 @@ function shotDist(n, i) {
 function completeHole() {
   const n = viewHole, st = hs(n);
   st.done = true; st.endTs = Date.now(); if (!st.startTs) st.startTs = S.started;
-  if (counted(st)) st.adj = counted(st) - H(n).par; else if (st.adj == null) st.adj = 0;
+  if (!counted(st) && st.adj == null) st.adj = 0;
   const i = S.order.indexOf(n);
   if (i === S.order.length - 1) { S.ended = Date.now(); save(); tab = 'card'; render(); return; }
   const nx = S.order[i + 1]; S.cur = nx; viewHole = nx; target = null;
@@ -541,7 +543,7 @@ function renderHole() {
   const shots = st.shots.map((s, i) => {
     const k = st.shots.slice(0, i + 1).filter(x => !x.g || x.g.counts).length, dd = shotDist(n, i);
     return s.g ? `<div class="shot"><span class="n g">G</span><span class="t">${esc(s.g.kind)}${s.g.note ? ' — ' + esc(s.g.note) : ''}${s.p != null && S.players[s.p] ? ' · ' + esc(S.players[s.p]) : ''}${s.g.counts ? ' <b>(+1 stroke)</b>' : ''}</span><button class="x" onclick="delShot(${n},${i})">✕</button></div>`
-      : `<div class="shot"><span class="n">${k}</span><span class="t"><select style="width:auto;padding:2px 4px" onchange="hs(${n}).shots[${i}].t=this.value;save()">${['Drive', 'Tee shot', 'Second', 'Approach', 'Chip', 'Putt'].map(o => `<option ${o === s.t ? 'selected' : ''}>${o}</option>`).join('')}</select> ${S.mode === 'scramble' ? '— <b>' + esc(s.p != null ? S.players[s.p] : 'Team') + '</b>' : ''}${dd ? ' <span class="mut">' + dd + ' yd</span>' : ''}</span><button class="x" onclick="delShot(${n},${i})">✕</button></div>`;
+      : `<div class="shot"><span class="n">${k}</span><span class="t"><select style="width:auto;padding:2px 4px" onchange="hs(${n}).shots[${i}].t=this.value;save()">${['Drive', 'Tee shot', 'Second', 'Approach', 'Chip', 'Putt'].map(o => `<option ${o === s.t ? 'selected' : ''}>${o}</option>`).join('')}</select> ${s.gimme ? '<b class="warnTxt">Gimme</b> (no one)' : S.mode === 'scramble' ? '— <b>' + esc(s.p != null ? S.players[s.p] : 'Team') + '</b>' : ''}${dd ? ' <span class="mut">' + dd + ' yd</span>' : ''}</span><button class="x" onclick="delShot(${n},${i})">✕</button></div>`;
   }).join('');
   const topHtml = `
   <div class="holebar"><button onclick="stepHole(-1)">◀</button>
@@ -555,8 +557,9 @@ function renderHole() {
     <div class="row"><b style="flex:2">${S.mode === 'scramble' ? '👥 Team shots' : 'Shots'} · Hole ${n}</b><button class="sm" onclick="startDictation()">🎙 Dictate</button>${S.mode === 'scramble' ? '<button class="sm" onclick="gimmickSheet()">🎲 Gimmick</button>' : ''}</div>
     ${players}
     <div style="margin-top:8px">${shots || '<div class="mut small">No shots logged yet. Tap a name after each shot (or dictate later).</div>'}</div>
-    <div class="score"><button class="pm" onclick="bump(-1)">−</button><div class="val"><div class="rel ${relCls(r)}">${r == null ? (counted(st) ? relStr(counted(st) - h.par) : 'E') : relStr(r)}</div><div class="small mut">${r != null ? (h.par + r) + ' strokes' : counted(st) ? counted(st) + ' logged' : 'tap ± to override'}${st.adj != null && counted(st) && st.adj !== counted(st) - h.par ? ' · <span class="warnTxt">override</span>' : ''}</div></div><button class="pm" onclick="bump(1)">+</button></div>
-    <button class="pri" style="width:100%;margin-top:10px;padding:14px" onclick="completeHole()">${st.done ? '✓ Completed — save & next' : 'Complete hole ' + n + (idx === order.length - 1 ? ' (finish round)' : '')}</button>
+    <div class="score"><button class="pm" onclick="bump(-1)">−</button><div class="val"><div class="rel ${relCls(r)}">${r == null ? 'E' : relStr(r)}</div><div class="small mut">${r != null ? (h.par + r) + ' strokes' : 'tap ± to override'}${st.manual && counted(st) ? ' · <span class="warnTxt">override (' + counted(st) + ' logged)</span>' : ''}</div></div><button class="pm" onclick="bump(1)">+</button></div>
+    <button style="width:100%;margin-top:10px;padding:12px;background:#3a3216;color:var(--warn);font-weight:700" onclick="gimme()">👌 Gimme — add the final stroke &amp; close hole ${n}</button>
+    <button class="pri" style="width:100%;margin-top:8px;padding:14px" onclick="completeHole()">${st.done ? '✓ Completed — save & next' : 'Complete hole ' + n + (idx === order.length - 1 ? ' (finish round)' : '')}</button>
   </div>`}
   <div style="height:20px"></div>`;
   if (!$('#holeTop') || !$('#map') || !$('#liveTop')) {
@@ -568,8 +571,13 @@ function renderHole() {
   drawMap();
   if (fresh) setTimeout(() => { if (map) { map.invalidateSize(); fitHole(true); } }, 80);
 }
-function bump(d) { const n = viewHole, st = hs(n); const base = rel(n) != null ? rel(n) : (counted(st) ? counted(st) - H(n).par : 0); st.adj = base + d; save(); render(); }
-function delShot(n, i) { hs(n).shots.splice(i, 1); save(); render(); }
+function bump(d) { const n = viewHole, st = hs(n); const base = rel(n) != null ? rel(n) : 0; st.adj = base + d; st.manual = true; save(); render(); }
+function delShot(n, i) { const st = hs(n); st.shots.splice(i, 1); st.manual = false; save(); render(); }
+function gimme() { // counted stroke, credited to no one, then close the hole
+  const n = viewHole, st = hs(n); st.manual = false;
+  st.shots.push({p: null, ts: Date.now(), pos: me() || null, t: 'Putt', gimme: true});
+  save(); completeHole();
+}
 
 function startGrid(action, sel) {
   return `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px">${[...Array(18)].map((_, i) => `<button class="sm ${sel === i + 1 ? 'on' : ''}" style="padding:10px 0" onclick="${action.replace('N', i + 1)}">${i + 1}</button>`).join('')}</div>`;
