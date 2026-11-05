@@ -52,6 +52,14 @@ targets:
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.travisgafford.bearcreekgps
         NSLocationWhenInUseUsageDescription: Live yardages from your watch on the course.
+        NSHealthShareUsageDescription: Bear Creek GPS runs your round as a golf workout so the app and GPS stay live.
+        NSHealthUpdateUsageDescription: Saves your round as a golf workout in Fitness.
+        WKBackgroundModes: [workout-processing]
+    entitlements:
+      path: Watch/Watch.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.travisgafford.bearcreekgps.watchkitapp

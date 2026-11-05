@@ -36,6 +36,12 @@ struct WatchView: View {
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
             Spacer(minLength: 0)
+            Button { m.toggleWorkout() } label: {
+                Text(m.workoutOn ? "● Live · End round" : "Start round")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(m.workoutOn ? Color.green : Color.orange)
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 4)
         .onAppear { m.start() }

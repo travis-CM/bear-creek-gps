@@ -1,10 +1,15 @@
 import Foundation
 import CoreLocation
 import WatchConnectivity
+import HealthKit
 
 /// Live distance + plays-like on the watch, from the watch's own GPS.
 /// Hole, pin and weather come from the iPhone app; the watch falls back to its bundled course data.
-final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, WCSessionDelegate {
+final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, WCSessionDelegate, HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate {
+    @Published var workoutOn = false
+    private let health = HKHealthStore()
+    private var workout: HKWorkoutSession?
+    private var builder: HKLiveWorkoutBuilder?
     @Published var dist: Double?
     @Published var plays: Double?
     @Published var holeLabel = "—"
@@ -61,7 +66,60 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
             WCSession.default.activate()
         }
         fetchWeather()
+        startWorkout()
     }
+
+    // MARK: - Golf workout: keeps the app on screen and the GPS live for the whole round
+    func startWorkout() {
+        guard HKHealthStore.isHealthDataAvailable(), workout == nil else { return }
+        health.requestAuthorization(toShare: [HKObjectType.workoutType()], read: []) { _, _ in
+            DispatchQueue.main.async { self.beginSession() }
+        }
+    }
+
+    private func beginSession() {
+        guard workout == nil else { return }
+        let cfg = HKWorkoutConfiguration()
+        cfg.activityType = .golf
+        cfg.locationType = .outdoor
+        do {
+            let s = try HKWorkoutSession(healthStore: health, configuration: cfg)
+            let b = s.associatedWorkoutBuilder()
+            b.dataSource = HKLiveWorkoutDataSource(healthStore: health, workoutConfiguration: cfg)
+            s.delegate = self
+            b.delegate = self
+            workout = s
+            builder = b
+            let now = Date()
+            s.startActivity(with: now)
+            b.beginCollection(withStart: now) { _, _ in }
+            workoutOn = true
+        } catch {
+            workoutOn = false
+        }
+    }
+
+    func endWorkout() {
+        guard let s = workout else { return }
+        s.end()
+        builder?.endCollection(withEnd: Date()) { _, _ in
+            self.builder?.finishWorkout { _, _ in }
+        }
+        workout = nil
+        DispatchQueue.main.async { self.workoutOn = false }
+    }
+
+    func toggleWorkout() { workoutOn ? endWorkout() : startWorkout() }
+
+    func workoutSession(_ workoutSession: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState,
+                        from fromState: HKWorkoutSessionState, date: Date) {
+        DispatchQueue.main.async { self.workoutOn = (toState == .running) }
+    }
+    func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
+        DispatchQueue.main.async { self.workoutOn = false; self.workout = nil }
+    }
+    func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>) {}
+    func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}
 
     func step(_ d: Int) {
         hole = (hole - 1 + d + 18) % 18 + 1
