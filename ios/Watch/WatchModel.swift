@@ -2,6 +2,7 @@ import Foundation
 import CoreLocation
 import WatchConnectivity
 import HealthKit
+import CoreMotion
 
 struct Hazard: Identifiable {
     let id: Int
@@ -18,6 +19,16 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     private var builder: HKLiveWorkoutBuilder?
     @Published var dist: Double?
     @Published var hazards: [Hazard] = []
+    @Published var front: (Double, Double)?   // (yards, plays-like)
+    @Published var back: (Double, Double)?
+    @Published var pinSet = false
+    @Published var page = 0 { didSet { pageAt = Date() } }
+    @Published var resetTick = 0
+    private var pageAt = Date()
+    private var detailAt: Date?
+    private var lastSwing = Date.distantPast
+    private let motion = CMMotionManager()
+    private var ticker: Timer?
     @Published var plays: Double?
     @Published var holeLabel = "—"
 
@@ -74,6 +85,34 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         }
         fetchWeather()
         startWorkout()
+        ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        if motion.isDeviceMotionAvailable {
+            motion.deviceMotionUpdateInterval = 1.0 / 50
+            motion.startDeviceMotionUpdates(to: .main) { [weak self] dm, _ in
+                guard let self = self, let r = dm?.rotationRate else { return }
+                // a golf swing spins the wrist far faster than walking or riding
+                if sqrt(r.x * r.x + r.y * r.y + r.z * r.z) > 12, Date().timeIntervalSince(self.lastSwing) > 3 {
+                    self.lastSwing = Date()
+                    self.resetView()
+                }
+            }
+        }
+    }
+
+    /// Front/back rows scrolled into view
+    func detailShown() { detailAt = Date() }
+
+    /// Snap back to the big pin number: after 10 s on another page / scrolled down, or after a swing
+    func resetView() {
+        detailAt = nil
+        if page != 0 { page = 0 }
+        resetTick += 1
+    }
+
+    private func tick() {
+        let now = Date()
+        if page != 0 && now.timeIntervalSince(pageAt) > 10 { resetView() }
+        else if let d = detailAt, now.timeIntervalSince(d) > 10 { resetView() }
     }
 
     // MARK: - Golf workout: keeps the app on screen and the GPS live for the whole round
@@ -131,6 +170,7 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     func step(_ d: Int) {
         hole = (hole - 1 + d + 18) % 18 + 1
         pin = nil
+        pinSet = false
         UserDefaults.standard.set(hole, forKey: "hole")
         updateLabel()
         recompute()
@@ -266,12 +306,39 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     }
 
     private func recompute() {
-        guard let l = last, let p = pinPoint() else { dist = nil; plays = nil; hazards = []; return }
+        guard let l = last, let p = pinPoint() else { dist = nil; plays = nil; hazards = []; front = nil; back = nil; return }
         let from = (l.coordinate.latitude, l.coordinate.longitude)
         let r = playsLike(from, p)
         dist = r.0
         plays = r.1
         hazards = computeHazards(from, p)
+        if let fb = frontBack(from, p) {
+            front = playsLike(from, fb.0)
+            back = playsLike(from, fb.1)
+        } else { front = nil; back = nil }
+    }
+
+    /// front / back edge of the green along your line to the pin
+    private func frontBack(_ from: (Double, Double), _ pin: (Double, Double)) -> ((Double, Double), (Double, Double))? {
+        guard let raw = holeInfo()?["gp"] as? [[NSNumber]], raw.count > 2 else { return nil }
+        let pts = raw.map { xy(($0[0].doubleValue, $0[1].doubleValue), from) }
+        let pv = xy(pin, from), D = hypot(pv.0, pv.1)
+        guard D > 1 else { return nil }
+        let d = (pv.0 / D, pv.1 / D)
+        var hits: [Double] = []
+        for k in 0..<(pts.count - 1) {
+            let a = pts[k], b = pts[k + 1], e = (b.0 - a.0, b.1 - a.1)
+            let den = d.0 * e.1 - d.1 * e.0
+            if abs(den) < 1e-9 { continue }
+            let s = (a.0 * e.1 - a.1 * e.0) / den, u = (a.0 * d.1 - a.1 * d.0) / den
+            if u >= 0 && u <= 1 && s > 0 { hits.append(s) }
+        }
+        if hits.count >= 2, let lo = hits.min(), let hi = hits.max() {
+            return (fromXY((d.0 * lo, d.1 * lo), from), fromXY((d.0 * hi, d.1 * hi), from))
+        }
+        // standing on/inside the green: nearest and farthest edge points
+        let near = pts.min { hypot($0.0, $0.1) < hypot($1.0, $1.1) }!, far = pts.max { hypot($0.0, $0.1) < hypot($1.0, $1.1) }!
+        return (fromXY(near, from), fromXY(far, from))
     }
 
     // MARK: - Weather fallback (when the phone hasn't sent any)
@@ -311,6 +378,7 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         if let c = ctx["course"] as? String { course = c; UserDefaults.standard.set(c, forKey: "course") }
         if let h = (ctx["hole"] as? NSNumber)?.intValue, (1...18).contains(h) { hole = h; UserDefaults.standard.set(h, forKey: "hole") }
         if let p = ctx["pin"] as? [NSNumber], p.count == 2 { pin = (p[0].doubleValue, p[1].doubleValue) }
+        pinSet = (ctx["pinSet"] as? NSNumber)?.boolValue ?? false
         if let w = ctx["wx"] as? [String: Any] {
             for (k, v) in w { if let n = v as? NSNumber { wx[k] = n.doubleValue } }
             wxTime = Date()

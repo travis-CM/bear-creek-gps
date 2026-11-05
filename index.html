@@ -15,7 +15,7 @@
 <style>
 :root{--bg:#0f1512;--card:#18211c;--card2:#212c26;--fg:#eef3ef;--mut:#9fb0a6;--acc:#4cc27a;--acc2:#2e8b57;--warn:#f0b43c;--bad:#ef6a5a;--blue:#5aa9ef;--sand:#e9d39a;--line:#2c3a32}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;height:100%}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;height:100%}
 body{display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom)}
 button{font:inherit;color:inherit;border:0;background:var(--card2);border-radius:10px;padding:10px 12px;cursor:pointer}
 button:active{filter:brightness(1.3)}
@@ -47,19 +47,19 @@ nav.tabs button.on{color:var(--acc);background:none;font-weight:700}
 .holebar .h b{font-size:20px}
 .dist{display:flex;text-align:center;gap:6px;margin:8px 12px 0}
 .dist>div{flex:1;background:var(--card);border-radius:12px;padding:8px 4px}
-.dist .lab{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
+.dist .lab{font-size:14px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
 .dist .num{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
-.dist .mid .num{font-size:44px;color:var(--acc)}
-.dist .pls .num{font-size:44px;font-weight:800;color:var(--warn)}
-.dist .num.sm2{font-size:24px}
+.dist .mid .num{font-size:72px;color:var(--acc);line-height:1}
+.dist .pls .num{font-size:60px;line-height:1;font-weight:800;color:var(--warn)}
+.dist .num.sm2{font-size:40px}
 .dist.big>div{padding:10px 4px}
-.dist .pl{font-size:13px;color:var(--warn);font-weight:600}
+.dist .pl{font-size:18px;color:var(--warn);font-weight:600}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-.chip{background:var(--card2);border-radius:20px;padding:3px 9px;font-size:12px;color:var(--mut)}
+.chip{background:var(--card2);border-radius:20px;padding:4px 10px;font-size:14px;color:var(--mut)}
 .chip b{color:var(--fg)}
 .tapmodes{display:flex;gap:6px;padding:8px 12px 0}
 .tapmodes button{flex:1}
-.hz{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:14px}
+.hz{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);font-size:18px}
 .hz:last-child{border:0}
 .hz .k{color:var(--mut)}
 .players{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
@@ -122,6 +122,6 @@ tr:has(td.x1) td.x1:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 <input type="file" id="photoIn" accept="image/*" capture="environment" class="hide">
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

@@ -255,7 +255,7 @@ function setGpsSource(s) { gpsSrc = s; postNative({type: 'source', value: s}); l
 function pushNativeState() { // tell the iPhone app (and through it the Watch) which hole, pin and weather to use
   if (!NATIVE || !C) return;
   const n = viewHole, p = pinOf(n), c = wx && wx.current;
-  const st = {type: 'state', course: course(), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]]};
+  const st = {type: 'state', course: course(), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]], pinSet: !!(S && S.holes[n] && S.holes[n].pin)};
   if (c) st.wx = {t: c.temperature_2m, rh: c.relative_humidity_2m, p: c.surface_pressure, ws: c.wind_speed_10m, wd: c.wind_direction_10m};
   const k = JSON.stringify(st); if (k !== lastNativeState) { lastNativeState = k; postNative(st); }
 }
