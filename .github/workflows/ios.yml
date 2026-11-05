@@ -36,15 +36,18 @@ jobs:
         if: env.HAS_KEY == 'true'
         run: |
           set +e
-          mkdir -p ~/private_keys
-          KEY=~/private_keys/AuthKey_$ASC_KEY_ID.p8
-          printf '%s\n' "$ASC_KEY_P8" > "$KEY"
-          AUTH="-allowProvisioningUpdates -authenticationKeyPath $KEY -authenticationKeyID $ASC_KEY_ID -authenticationKeyIssuerID $ASC_ISSUER_ID"
-          xcodebuild -project ios/BearCreekGPS.xcodeproj -scheme BearCreekGPS -configuration Release -destination 'generic/platform=iOS' -archivePath $RUNNER_TEMP/BC.xcarchive archive CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER $AUTH > build.log 2>&1
+          mkdir -p "$HOME/private_keys"
+          KID=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]')
+          IID=$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]')
+          export KEY="$HOME/private_keys/AuthKey_$KID.p8"
+          python3 -c "import os,re,textwrap;k=os.environ['ASC_KEY_P8'];b=re.sub(r'-----[A-Z ]+-----','',k);b=re.sub(r'\\s+','',b);open(os.environ['KEY'],'w').write('-----BEGIN PRIVATE KEY-----\\n'+'\\n'.join(textwrap.wrap(b,64))+'\\n-----END PRIVATE KEY-----\\n')"
+          echo "Key ID length: ${#KID} | Issuer ID length: ${#IID} | key file lines: $(wc -l < "$KEY")" | tee -a $GITHUB_STEP_SUMMARY
+          AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$IID")
+          xcodebuild -project ios/BearCreekGPS.xcodeproj -scheme BearCreekGPS -configuration Release -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/BC.xcarchive" archive CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER "${AUTH[@]}" > build.log 2>&1
           rc=$?
           grep -E "error:|ARCHIVE (SUCCEEDED|FAILED)" build.log | sort -u | head -60 | tee -a $GITHUB_STEP_SUMMARY
           if [ $rc -ne 0 ]; then exit $rc; fi
-          xcodebuild -exportArchive -archivePath $RUNNER_TEMP/BC.xcarchive -exportOptionsPlist ios/ExportOptions.plist -exportPath $RUNNER_TEMP/export $AUTH > export.log 2>&1
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/BC.xcarchive" -exportOptionsPlist ios/ExportOptions.plist -exportPath "$RUNNER_TEMP/export" "${AUTH[@]}" > export.log 2>&1
           rc=$?
           grep -iE "error|EXPORT (SUCCEEDED|FAILED)|Upload|uploaded" export.log | sort -u | head -60 | tee -a $GITHUB_STEP_SUMMARY
           exit $rc
