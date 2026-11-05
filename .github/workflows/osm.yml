@@ -23,7 +23,7 @@ jobs:
       - name: Unpack app bundle
         run: |
           test -f bundle.json || exit 0
-          python3 -c "import json,os;[open(k,'w').write(v) for k,v in json.load(open('bundle.json'))['files'].items()]"
+          python3 -c "import json,os;[(os.makedirs(os.path.dirname(k) or '.',exist_ok=True),open(k,'w').write(v)) for k,v in json.load(open('bundle.json'))['files'].items()]"
       - name: Elevation (USGS 3DEP) + logo + build
         run: |
           test -f build.py || exit 0
