@@ -238,12 +238,29 @@ function posFor(n) { const m = me(); return m && (manualMe || onThisHole(n, m)) 
 function posLabel() {
   if (manualMe) return '📍 Manual position (tap 📍 Me again → GPS)';
   if (gps && onCourse(gps.p) && !onThisHole(viewHole, gps.p)) return `🛰 You're not on this hole — showing from the ${tee()} tee`;
-  if (gps && onCourse(gps.p)) return `<span class="liveDot"></span><b style="color:var(--acc)">LIVE GPS</b> ±${Math.round(gps.acc * YD)} yd · ${Math.max(0, Math.round((Date.now() - gps.ts) / 1000))}s ago` + (gps.acc > 25 ? ' <span class="warnTxt">(weak)</span>' : '');
+  if (gps && onCourse(gps.p)) return `<span class="liveDot"></span><b style="color:var(--acc)">LIVE ${gps.src === 'watch' ? '⌚ WATCH' : NATIVE ? '📱 PHONE' : ''} GPS</b> ±${Math.round(gps.acc * YD)} yd · ${Math.max(0, Math.round((Date.now() - gps.ts) / 1000))}s ago` + (gps.acc > 25 ? ' <span class="warnTxt">(weak)</span>' : '');
   if (gps) return `🛰 GPS ok but you're off-course → showing from the ${tee()} tee`;
   return `${gpsErr ? '⚠️ ' + esc(gpsErr) + ' — ' : '🛰 waiting for GPS — '}showing from the ${tee()} tee`;
 }
 let lastRender = 0;
+const NATIVE = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bcgps);
+let gpsSrc = 'phone', watchPaired = false, lastNativeState = '';
+function postNative(o) { if (NATIVE) try { window.webkit.messageHandlers.bcgps.postMessage(o); } catch (e) {} }
+window.bcNative = {
+  loc(lat, lon, acc, src) { gps = {p: [lat, lon], acc, ts: Date.now(), src}; gpsErr = ''; trackHoleByGPS(); liveUpdate(); },
+  setSource(s, paired) { gpsSrc = s; watchPaired = !!paired; liveUpdate(); },
+  err(msg) { gpsErr = msg; liveUpdate(); }
+};
+function setGpsSource(s) { gpsSrc = s; postNative({type: 'source', value: s}); liveUpdate(); }
+function pushNativeState() { // tell the iPhone app (and through it the Watch) which hole, pin and weather to use
+  if (!NATIVE || !C) return;
+  const n = viewHole, p = pinOf(n), c = wx && wx.current;
+  const st = {type: 'state', course: course(), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]]};
+  if (c) st.wx = {t: c.temperature_2m, rh: c.relative_humidity_2m, p: c.surface_pressure, ws: c.wind_speed_10m, wd: c.wind_direction_10m};
+  const k = JSON.stringify(st); if (k !== lastNativeState) { lastNativeState = k; postNative(st); }
+}
 function startGPS() {
+  if (NATIVE) { postNative({type: 'ready'}); return; } // the iPhone app feeds GPS (phone or watch) through bcNative.loc
   if (!navigator.geolocation) { gpsErr = 'GPS not supported'; return; }
   navigator.geolocation.watchPosition(p => {
     gps = {p: [p.coords.latitude, p.coords.longitude], acc: p.coords.accuracy, ts: Date.now()}; gpsErr = '';
@@ -544,7 +561,7 @@ function liveHtml(part) {
   const c = wx && wx.current;
   const wxHtml = c ? (() => { const rel = c.wind_direction_10m - bearing(from, pin) + 180; return `<span class="chip">🌡 <b>${Math.round(c.temperature_2m)}°</b></span><span class="chip">💨 <b>${Math.round(c.wind_speed_10m)}</b> mph ${compass(c.wind_direction_10m)} (gust ${Math.round(c.wind_gusts_10m)}) <span class="windArrow" style="transform:rotate(${rel}deg)">⬆</span> ${pl.head > 2 ? '<b>into</b>' : pl.head < -2 ? '<b>helping</b>' : 'cross'}</span><span class="chip">💧 ${c.relative_humidity_2m}%</span><span class="chip">${Math.round(c.surface_pressure)} hPa</span><span class="chip">🔄 ${wxAge()}</span>`; })() : `<span class="chip">${wxErr || 'loading weather…'}</span>`;
   const gpsOn = !manualMe && gps && onCourse(gps.p) && onThisHole(n, gps.p) && Date.now() - gps.ts < 120e3;
-  if (part === 'top') return `  <div class="dist big" style="margin-top:6px"><div class="mid"><div class="lab">${gpsOn ? '<span class="liveDot"></span>Live distance' : 'Distance'} to ${st.pin ? 'pin' : 'middle'}</div><div class="num">${Math.round(mid)}</div><div class="small mut">yards</div></div>
+  if (part === 'top') return (NATIVE ? `<div class="row" style="padding:6px 12px 0;gap:6px"><span class="small mut" style="flex:0 0 auto">GPS source</span><button class="sm ${gpsSrc === 'phone' ? 'on' : ''}" onclick="setGpsSource('phone')">📱 Phone</button><button class="sm ${gpsSrc === 'watch' ? 'on' : ''}" onclick="setGpsSource('watch')">⌚ Watch${watchPaired ? '' : ' (not linked)'}</button></div>` : '') + `  <div class="dist big" style="margin-top:6px"><div class="mid"><div class="lab">${gpsOn ? '<span class="liveDot"></span>Live distance' : 'Distance'} to ${st.pin ? 'pin' : 'middle'}</div><div class="num">${Math.round(mid)}</div><div class="small mut">yards</div></div>
     <div class="pls"><div class="lab">Plays like</div><div class="num">${Math.round(pl.total)}</div><div class="small mut">${pl.dh != null ? (pl.dh >= 0 ? '▲' : '▼') + Math.abs(Math.round(pl.dh)) + ' ft · ' : ''}${wx ? 'wind ' + (pl.head > 2 ? 'into' : pl.head < -2 ? 'helping' : 'cross') : 'weather loading'}</div></div></div>
 `;
   return `  <div class="small mut" style="padding:4px 12px">${posLabel()}${tapMode !== 'target' ? ` — <b class="warnTxt">tap the map to place ${tapMode === 'pin' ? 'the pin' : 'yourself'}</b>` : ' — tap map to measure'}</div>
@@ -558,7 +575,7 @@ function liveHtml(part) {
 }
 function liveUpdate() { // called on every GPS fix: refresh numbers + map overlays, keep the rest of the screen untouched
   if (tab !== 'hole' || !S || !$('#live')) return;
-  $('#live').innerHTML = liveHtml(); $('#liveTop').innerHTML = liveHtml('top'); drawMap(); renderBanner();
+  $('#live').innerHTML = liveHtml(); $('#liveTop').innerHTML = liveHtml('top'); drawMap(); renderBanner(); pushNativeState();
 }
 function renderHole() {
   if (!S) { renderSetup(); return; }
