@@ -44,7 +44,7 @@ jobs:
           python3 -c "import os,re,textwrap;k=os.environ['ASC_KEY_P8'];b=re.sub(r'-----[A-Z ]+-----','',k);b=re.sub(r'\\s+','',b);open(os.environ['KEY'],'w').write('-----BEGIN PRIVATE KEY-----\\n'+'\\n'.join(textwrap.wrap(b,64))+'\\n-----END PRIVATE KEY-----\\n')"
           echo "Key ID length: ${#KID} | Issuer ID length: ${#IID} | key file lines: $(wc -l < "$KEY")" | tee -a $GITHUB_STEP_SUMMARY
           AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$IID")
-          xcodebuild -project ios/BearCreekGPS.xcodeproj -scheme BearCreekGPS -configuration Release -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/BC.xcarchive" archive CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER CODE_SIGNING_ALLOWED=NO > build.log 2>&1
+          xcodebuild -project ios/BearCreekGPS.xcodeproj -scheme BearCreekGPS -configuration Release -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/BC.xcarchive" archive CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES PROVISIONING_PROFILE_SPECIFIER= > build.log 2>&1
           rc=$?
           grep -E "error:|ARCHIVE (SUCCEEDED|FAILED)" build.log | sort -u | head -60 | tee -a $GITHUB_STEP_SUMMARY
           if [ $rc -ne 0 ]; then exit $rc; fi
