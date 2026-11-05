@@ -1,0 +1,50 @@
+name: iPhone + Watch app
+on:
+  push:
+    paths: ['bundle.json', '.github/workflows/ios.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      HAS_KEY: ${{ secrets.ASC_KEY_P8 != '' }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack app source
+        run: python3 -c "import json,os;[(os.makedirs(os.path.dirname(k) or '.',exist_ok=True),open(k,'w').write(v)) for k,v in json.load(open('bundle.json'))['files'].items()]"
+      - name: Tools
+        run: |
+          brew install xcodegen
+          python3 -m pip install --break-system-packages pillow || python3 -m pip install pillow
+          xcodebuild -version
+      - name: Icons, watch data, Xcode project
+        run: |
+          python3 ios/make_assets.py
+          cd ios && xcodegen generate
+      - name: Compile check (no signing)
+        if: env.HAS_KEY != 'true'
+        run: |
+          set +e
+          xcodebuild -project ios/BearCreekGPS.xcodeproj -scheme BearCreekGPS -configuration Release -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build > build.log 2>&1
+          rc=$?
+          grep -E "error:|BUILD (SUCCEEDED|FAILED)" build.log | sort -u | head -60 | tee -a $GITHUB_STEP_SUMMARY
+          exit $rc
+      - name: Archive, sign and upload to TestFlight
+        if: env.HAS_KEY == 'true'
+        run: |
+          set +e
+          mkdir -p ~/private_keys
+          KEY=~/private_keys/AuthKey_$ASC_KEY_ID.p8
+          printf '%s\n' "$ASC_KEY_P8" > "$KEY"
+          AUTH="-allowProvisioningUpdates -authenticationKeyPath $KEY -authenticationKeyID $ASC_KEY_ID -authenticationKeyIssuerID $ASC_ISSUER_ID"
+          xcodebuild -project ios/BearCreekGPS.xcodeproj -scheme BearCreekGPS -configuration Release -destination 'generic/platform=iOS' -archivePath $RUNNER_TEMP/BC.xcarchive archive CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER $AUTH > build.log 2>&1
+          rc=$?
+          grep -E "error:|ARCHIVE (SUCCEEDED|FAILED)" build.log | sort -u | head -60 | tee -a $GITHUB_STEP_SUMMARY
+          if [ $rc -ne 0 ]; then exit $rc; fi
+          xcodebuild -exportArchive -archivePath $RUNNER_TEMP/BC.xcarchive -exportOptionsPlist ios/ExportOptions.plist -exportPath $RUNNER_TEMP/export $AUTH > export.log 2>&1
+          rc=$?
+          grep -iE "error|EXPORT (SUCCEEDED|FAILED)|Upload|uploaded" export.log | sort -u | head -60 | tee -a $GITHUB_STEP_SUMMARY
+          exit $rc
