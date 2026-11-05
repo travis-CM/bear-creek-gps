@@ -511,6 +511,7 @@ function hazardsFrom(from, h) {
     const c = centroid(z.p), cv = xy(c, from), proj = cv[0] * u[0] + cv[1] * u[1], side = u[0] * cv[1] - u[1] * cv[0];
     if (proj < -5 || proj > D + 25) return;
     const reach = polyNear(from, z.p) * YD, carry = polyFar(from, z.p) * YD; if (reach < 3 && inside(from, z.p)) return;
+    if (reach > 300) return; // only hazards within 300 yards
     const near = distM(c, g) < 35;
     const lat = Math.abs(side) < 8 ? 'center' : side > 0 ? 'left' : 'right';
     const rp = nearestPt(from, z.p), cp = farPt(from, z.p);
@@ -569,7 +570,7 @@ function liveHtml(part) {
     <div><div class="lab">Back</div><div class="num sm2">${Math.round(fb.b)}</div><div class="pl">plays ${Math.round(fb.b + (pl.total - pl.d))}</div></div></div>
   <div style="padding:0 12px"><div class="chips">${plChips(pl)}</div><div class="chips">${wxHtml}</div></div>
   ${tgtHtml}
-  ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS AHEAD — reach / carry <span class="warnTxt">(plays like)</span></div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="warnTxt">(${Math.round(z.reachPl)})</span> <span class="k">/</span> <b>${Math.round(z.carry)}</b> <span class="warnTxt">(${Math.round(z.carryPl)})</span></span></div>`).join('')}</div>` : ''}
+  ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS WITHIN 300 — reach / carry <span class="warnTxt">(plays like)</span></div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="warnTxt">(${Math.round(z.reachPl)})</span> <span class="k">/</span> <b>${Math.round(z.carry)}</b> <span class="warnTxt">(${Math.round(z.carryPl)})</span></span></div>`).join('')}</div>` : ''}
   ${h.note ? `<div class="card small">📝 ${esc(h.note)}</div>` : ''}
 `;
 }

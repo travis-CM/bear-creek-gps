@@ -11,7 +11,7 @@ for p in ['ios/iOS/Assets.xcassets/AppIcon.appiconset/icon.png', 'ios/Watch/Asse
     icon(p)
 c = json.load(open('course.json'))
 def cen(poly): return [round(sum(p[0] for p in poly) / len(poly), 6), round(sum(p[1] for p in poly) / len(poly), 6)]
-out = {k: [{'n': h['n'], 'par': h['par'], 'g': cen(h['green'])} for h in v['holes']] for k, v in c['courses'].items()}
+out = {k: [{'n': h['n'], 'par': h['par'], 'g': cen(h['green']), 'hz': [{'t': z['t'], 'p': [[round(q[0], 6), round(q[1], 6)] for q in z['p']]} for z in h['hz']]} for h in v['holes']] for k, v in c['courses'].items()}
 out['dem'] = c['dem']
 json.dump(out, open('ios/Watch/course_watch.json', 'w'))
 shutil.copy('dem.bin', 'ios/Watch/dem.bin')

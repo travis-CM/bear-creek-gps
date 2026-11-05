@@ -21,6 +21,8 @@ targets:
       path: iOS/Info.plist
       properties:
         CFBundleDisplayName: Bear Creek GPS
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIBackgroundModes: [location]
@@ -49,6 +51,8 @@ targets:
       path: Watch/Info.plist
       properties:
         CFBundleDisplayName: Bear Creek
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.travisgafford.bearcreekgps
         NSLocationWhenInUseUsageDescription: Live yardages from your watch on the course.

@@ -3,6 +3,12 @@ import CoreLocation
 import WatchConnectivity
 import HealthKit
 
+struct Hazard: Identifiable {
+    let id: Int
+    let name: String
+    let reach: Double, reachPl: Double, carry: Double, carryPl: Double
+}
+
 /// Live distance + plays-like on the watch, from the watch's own GPS.
 /// Hole, pin and weather come from the iPhone app; the watch falls back to its bundled course data.
 final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, WCSessionDelegate, HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate {
@@ -11,6 +17,7 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     private var workout: HKWorkoutSession?
     private var builder: HKLiveWorkoutBuilder?
     @Published var dist: Double?
+    @Published var hazards: [Hazard] = []
     @Published var plays: Double?
     @Published var holeLabel = "—"
 
@@ -198,12 +205,11 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         return (pd * 100) / (287.058 * (t + 273.15)) + (pv * 100) / (461.495 * (t + 273.15))
     }
 
-    private func recompute() {
-        guard let l = last, let p = pinPoint() else { dist = nil; plays = nil; return }
-        let from = (l.coordinate.latitude, l.coordinate.longitude)
-        let d = meters(from, p) * yd
+    /// returns (yards, plays-like yards) from -> to
+    private func playsLike(_ from: (Double, Double), _ to: (Double, Double)) -> (Double, Double) {
+        let d = meters(from, to) * yd
         var total = d
-        if let e1 = elevationFt(from), let e2 = elevationFt(p) {
+        if let e1 = elevationFt(from), let e2 = elevationFt(to) {
             let dh = e2 - e1
             total += dh / 3 * (dh > 0 ? 1 : 0.9)
         }
@@ -211,12 +217,61 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
             total += d * 0.55 * (airDensity(t, pr, rh) / airDensity(70, 1013.25, 50) - 1)
         }
         if let ws = wx["ws"], let wd = wx["wd"], d > 15 {
-            let rel = (wd - bearing(from, p)) * .pi / 180
+            let rel = (wd - bearing(from, to)) * .pi / 180
             let head = ws * cos(rel), scale = min(1, d / 120)
             total += (head > 0 ? 0.01 : 0.005) * head * d * scale
         }
-        dist = d
-        plays = total
+        return (d, total)
+    }
+
+    // local flat-earth x/y in meters around an origin
+    private func xy(_ p: (Double, Double), _ o: (Double, Double)) -> (Double, Double) {
+        ((p.1 - o.1) * 111320 * cos(o.0 * .pi / 180), (p.0 - o.0) * 110540)
+    }
+    private func fromXY(_ v: (Double, Double), _ o: (Double, Double)) -> (Double, Double) {
+        (o.0 + v.1 / 110540, o.1 + v.0 / (111320 * cos(o.0 * .pi / 180)))
+    }
+
+    private func computeHazards(_ from: (Double, Double), _ pin: (Double, Double)) -> [Hazard] {
+        guard let list = holeInfo()?["hz"] as? [[String: Any]] else { return [] }
+        let pv = xy(pin, from), D = hypot(pv.0, pv.1)
+        guard D > 1 else { return [] }
+        let u = (pv.0 / D, pv.1 / D)
+        var out: [Hazard] = []
+        for (idx, z) in list.enumerated() {
+            guard let raw = z["p"] as? [[NSNumber]], raw.count > 2 else { continue }
+            let poly = raw.map { ($0[0].doubleValue, $0[1].doubleValue) }
+            let pts = poly.map { xy($0, from) }
+            let c = (pts.map { $0.0 }.reduce(0, +) / Double(pts.count), pts.map { $0.1 }.reduce(0, +) / Double(pts.count))
+            let proj = c.0 * u.0 + c.1 * u.1
+            if proj < -5 || proj > D + 25 { continue }           // only hazards ahead of you
+            var best = (1e9, (0.0, 0.0)), far = (0.0, (0.0, 0.0))
+            for k in 0..<(pts.count - 1) {
+                let a = pts[k], b = pts[k + 1], dx = b.0 - a.0, dy = b.1 - a.1, L = dx * dx + dy * dy
+                let t = L > 0 ? max(0, min(1, -(a.0 * dx + a.1 * dy) / L)) : 0
+                let q = (a.0 + t * dx, a.1 + t * dy), dq = hypot(q.0, q.1)
+                if dq < best.0 { best = (dq, q) }
+            }
+            for q in pts { let dq = hypot(q.0, q.1); if dq > far.0 { far = (dq, q) } }
+            let reachYd = best.0 * yd
+            if reachYd > 300 || reachYd < 3 { continue }       // within 300 yards
+            let side = u.0 * c.1 - u.1 * c.0
+            let lat = abs(side) < 8 ? "C" : (side > 0 ? "L" : "R")
+            let isBunker = (z["t"] as? String) == "b"
+            let rp = playsLike(from, fromXY(best.1, from)), cp = playsLike(from, fromXY(far.1, from))
+            out.append(Hazard(id: idx, name: (isBunker ? "Bunker " : "Water ") + lat,
+                              reach: rp.0, reachPl: rp.1, carry: cp.0, carryPl: cp.1))
+        }
+        return out.sorted { $0.reach < $1.reach }
+    }
+
+    private func recompute() {
+        guard let l = last, let p = pinPoint() else { dist = nil; plays = nil; hazards = []; return }
+        let from = (l.coordinate.latitude, l.coordinate.longitude)
+        let r = playsLike(from, p)
+        dist = r.0
+        plays = r.1
+        hazards = computeHazards(from, p)
     }
 
     // MARK: - Weather fallback (when the phone hasn't sent any)

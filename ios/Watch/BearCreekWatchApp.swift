@@ -5,7 +5,12 @@ struct BearCreekWatchApp: App {
     @StateObject private var model = WatchModel()
     var body: some Scene {
         WindowGroup {
-            WatchView().environmentObject(model)
+            TabView {
+                WatchView()
+                HazardView()
+            }
+            .tabViewStyle(.page)
+            .environmentObject(model)
         }
     }
 }
@@ -45,5 +50,35 @@ struct WatchView: View {
         }
         .padding(.horizontal, 4)
         .onAppear { m.start() }
+    }
+}
+
+/// Swipe left: bunkers and water within 300 yards — reach (plays) / carry (plays)
+struct HazardView: View {
+    @EnvironmentObject var m: WatchModel
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("HAZARDS · \(m.holeLabel)").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                if m.hazards.isEmpty {
+                    Text("None within 300 yds").font(.system(size: 14)).foregroundStyle(.secondary)
+                }
+                ForEach(m.hazards) { h in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(h.name).font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(h.name.hasPrefix("Water") ? Color.cyan : Color(red: 0.91, green: 0.83, blue: 0.6))
+                        HStack(spacing: 4) {
+                            Text("\(Int(h.reach.rounded()))").font(.system(size: 20, weight: .bold, design: .rounded))
+                            Text("(\(Int(h.reachPl.rounded())))").font(.system(size: 14, weight: .semibold)).foregroundStyle(.orange)
+                            Text("/").foregroundStyle(.secondary)
+                            Text("\(Int(h.carry.rounded()))").font(.system(size: 20, weight: .bold, design: .rounded))
+                            Text("(\(Int(h.carryPl.rounded())))").font(.system(size: 14, weight: .semibold)).foregroundStyle(.orange)
+                        }
+                    }
+                    Divider()
+                }
+                Text("reach (plays) / carry (plays)").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
     }
 }
