@@ -559,6 +559,7 @@ function drawMap() {
   initMap(); layers.clearLayers();
   const h = H(viewHole), pin = pinOf(viewHole), from = posFor(viewHole);
   (h.fw || []).forEach(f => L.polygon(f, {color: '#7fdc8f', weight: 1, fillOpacity: .05, interactive: false}).addTo(layers));
+  ((C && C.creeks) || []).forEach(p => L.polygon(p, {color: '#58a8ff', weight: 1, fillColor: '#58a8ff', fillOpacity: .35, interactive: false}).addTo(layers));
   h.hz.forEach(z => L.polygon(z.p, {color: z.t === 'b' ? '#f3dc9b' : '#58a8ff', weight: 2, fillOpacity: .15, interactive: false}).addTo(layers));
   L.polygon(h.green, {color: '#fff', weight: 2, fillOpacity: .08, interactive: false}).addTo(layers);
   L.polyline(h.line, {color: '#fff', weight: 1.5, dashArray: '4 6', opacity: .7, interactive: false}).addTo(layers);
