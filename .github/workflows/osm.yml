@@ -26,10 +26,11 @@ jobs:
           Q='[out:json][timeout:120];way[waterway](32.845,-97.075,32.875,-97.04);out geom tags;'
           for i in 1 2 3; do
             for U in https://overpass-api.de/api/interpreter https://maps.mail.ru/osm/tools/overpass/api/interpreter https://overpass.kumi.systems/api/interpreter; do
-              curl -sS -m 150 --data-urlencode "data=$Q" "$U" -o water.json && python3 -c "import json;json.load(open('water.json'))['elements']" && break 2
+              curl -sS -m 150 --data-urlencode "data=$Q" "$U" -o water.new && python3 -c "import json;json.load(open('water.new'))['elements']" && mv water.new water.json && break 2
             done
             sleep 20
           done
+          rm -f water.new
           python3 -c "import json;print('waterway ways:',len(json.load(open('water.json'))['elements']))" || rm -f water.json
       - name: Unpack app bundle
         run: |
