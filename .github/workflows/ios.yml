@@ -51,4 +51,5 @@ jobs:
           xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/BC.xcarchive" -exportOptionsPlist ios/ExportOptions.plist -exportPath "$RUNNER_TEMP/export" "${AUTH[@]}" > export.log 2>&1
           rc=$?
           grep -iE "error|EXPORT (SUCCEEDED|FAILED)|Upload|uploaded" export.log | sort -u | head -60 | tee -a $GITHUB_STEP_SUMMARY
+          if [ $rc -ne 0 ]; then echo "---- export.log tail ----"; grep -vE "^\s*$" export.log | tail -60 | cut -c1-400; fi
           exit $rc
