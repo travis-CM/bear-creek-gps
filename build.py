@@ -2,6 +2,8 @@ import json, math, concurrent.futures as cf, urllib.request, os, sys
 
 d = json.load(open('osm.json'))
 els = d['elements']
+if os.path.exists('water.json'):  # OSM waterways (creeks/streams), fetched best-effort by the workflow
+    els = els + json.load(open('water.json')).get('elements', [])
 
 def P(e, n=6): return [[round(p['lat'], n), round(p['lon'], n)] for p in e['geometry']]
 
@@ -55,6 +57,29 @@ SC = {
           'blurb': 'Ted Robinson design. Considered a touch harder than the West: tighter fairways, smaller greens, 14 of 18 holes dogleg — a target course.'},
 }
 
+
+# ---- creeks / streams (OSM waterway lines) -> corridor polygons clipped to the stretch near each hole ----
+def inv(x, y): return [round(y / KY + LAT0, 6), round(x / KX - 97.06, 6)]
+def densify(l, step=8.0):
+    out = [l[0]]
+    for a, b in zip(l, l[1:]):
+        n = max(1, int(dist(a, b) // step))
+        for k in range(1, n + 1): out.append([a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n])
+    return out
+def corridor(run, hw=3.5):
+    m = [xy(p) for p in run]; L_, R_ = [], []
+    for i in range(len(m)):
+        a = m[max(0, i - 1)]; b = m[min(len(m) - 1, i + 1)]
+        tx, ty = b[0] - a[0], b[1] - a[1]; n = math.hypot(tx, ty) or 1
+        nx, ny = -ty / n, tx / n
+        L_.append(inv(m[i][0] + hw * nx, m[i][1] + hw * ny)); R_.append(inv(m[i][0] - hw * nx, m[i][1] - hw * ny))
+    return L_ + R_[::-1]
+WATERWAYS = ('stream', 'river', 'canal', 'drain', 'ditch')
+waterlines = [densify(P(e)) for e in els if e['tags'].get('waterway') in WATERWAYS and not e['tags'].get('tunnel') and not e['tags'].get('culvert') and 'geometry' in e]
+print('waterway lines', len(waterlines), file=sys.stderr)
+def covered_by_water(pt):
+    return any(inside(pt, w) or min(dist(pt, q) for q in w) < 6 for w in water)
+
 out = {'courses': {}}
 used_bunk = set()
 for cname in ('West', 'East'):
@@ -78,10 +103,21 @@ for cname in ('West', 'East'):
                 best = min(best, poly_d(poly, ol), min(dist(p, centroid(og)) for p in poly))
             return dmine <= best + 8
         for b in bunkers:
-            if (poly_d(b, l) < 40 or min(dist(p, centroid(g)) for p in b) < 35) and owner_ok(b):
+            # shared hazards: a bunker between two holes is listed on every hole it is near (no exclusive owner)
+            dline = poly_d(b, l); dg = min(dist(p, p2) for p in b for p2 in g)
+            # greenside bunkers of a *different* green don't play on this hole unless they are right on its line/green
+            oth = min(dist(p, p2) for og in greens if og is not g for p in b for p2 in og)
+            if (dline < 45 or dg < 40) and not (oth < 35 and dline >= 25 and dg >= 25):
                 hz.append({'t': 'b', 'p': b})
         for w in water:
             if poly_d(w, l) < 45: hz.append({'t': 'w', 'p': w})
+        # creek corridors: runs of waterway vertices within 55 m of this hole's line that no mapped water polygon already covers
+        for wl in waterlines:
+            run = []
+            for pt in wl + [None]:
+                if pt is not None and line_d(pt, l) < 55 and not covered_by_water(pt): run.append(pt); continue
+                if len(run) >= 3: hz.append({'t': 'w', 'p': corridor(run), 'creek': 1})
+                run = []
         fw = [f for f in fairways if poly_d(f, l) < 15]
         arr.append({'n': r, 'par': SC[cname]['par'][r-1], 'hcp': SC[cname]['hcp'][r-1],
                     'yds': {t: SC[cname]['tees'][t][r-1] for t in SC[cname]['tees']},
