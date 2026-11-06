@@ -9,8 +9,8 @@
 <meta name="theme-color" content="#0f2a1d">
 <title>GolfHub</title>
 <link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon.svg">
-<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
 :root{--bg:#0f1512;--card:#18211c;--card2:#212c26;--fg:#eef3ef;--mut:#9fb0a6;--acc:#4cc27a;--acc2:#2e8b57;--warn:#f0b43c;--bad:#ef6a5a;--blue:#5aa9ef;--sand:#e9d39a;--line:#2c3a32}
@@ -25,7 +25,7 @@ button.on{background:var(--acc);color:#06150c;font-weight:700}
 input,select,textarea{font:inherit;color:var(--fg);background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:9px 10px;width:100%}
 label{display:block;color:var(--mut);font-size:13px;margin:10px 0 4px}
 header{display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 6px) 12px 6px;background:#0b100d;border-bottom:1px solid var(--line)}
-header img{height:34px;max-width:90px;object-fit:contain}
+header img{height:30px;max-width:130px;object-fit:contain}
 header .logoTxt{font-weight:800;letter-spacing:.5px}
 header .grow{flex:1;min-width:0}
 header .clock{font-variant-numeric:tabular-nums;text-align:right;font-size:13px;color:var(--mut)}
@@ -104,7 +104,7 @@ tr:has(td.x1) td.x1:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 </head>
 <body>
 <header>
-  <img id="logo" src="logo.svg" alt="Bear Creek Golf Club" onerror="this.style.display='none';document.getElementById('logoTxt').style.display='block'">
+  <img id="logo" src="logo-golfhub.png" alt="GolfHub" onerror="this.style.display='none';document.getElementById('logoTxt').style.display='block'">
   <div id="logoTxt" class="logoTxt" style="display:none">BEAR CREEK</div>
   <div class="grow small mut" id="hdrSub"></div>
   <div class="clock" id="clock"></div>
