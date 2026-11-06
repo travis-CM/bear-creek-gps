@@ -6,14 +6,14 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#0f2a1d">
+<meta name="theme-color" content="#000000">
 <title>GolfHub</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-180.png">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
-:root{--bg:#0f1512;--card:#18211c;--card2:#212c26;--fg:#eef3ef;--mut:#9fb0a6;--acc:#4cc27a;--acc2:#2e8b57;--warn:#f0b43c;--bad:#ef6a5a;--blue:#5aa9ef;--sand:#e9d39a;--line:#2c3a32}
+:root{--bg:#0a0a0a;--card:#161616;--card2:#242424;--fg:#ffffff;--mut:#a3a3a3;--acc:#ff9900;--acc2:#c76f00;--warn:#ffd166;--bad:#ff5a4d;--blue:#5aa9ef;--sand:#e9d39a;--line:#2e2e2e}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;height:100%}
 body{display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom)}
@@ -21,17 +21,17 @@ button{font:inherit;color:inherit;border:0;background:var(--card2);border-radius
 button:active{filter:brightness(1.3)}
 button.pri{background:var(--acc2);font-weight:600}
 button.sm{padding:6px 9px;font-size:13px;border-radius:8px}
-button.on{background:var(--acc);color:#06150c;font-weight:700}
+button.on{background:var(--acc);color:#000;font-weight:700}
 input,select,textarea{font:inherit;color:var(--fg);background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:9px 10px;width:100%}
 label{display:block;color:var(--mut);font-size:13px;margin:10px 0 4px}
-header{display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 6px) 12px 6px;background:#0b100d;border-bottom:1px solid var(--line)}
+header{display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 6px) 12px 6px;background:#000000;border-bottom:1px solid var(--line)}
 header img{height:30px;max-width:130px;object-fit:contain}
 header .logoTxt{font-weight:800;letter-spacing:.5px}
 header .grow{flex:1;min-width:0}
 header .clock{font-variant-numeric:tabular-nums;text-align:right;font-size:13px;color:var(--mut)}
 header .clock b{color:var(--fg);font-size:15px}
 main{flex:1;overflow:auto;-webkit-overflow-scrolling:touch}
-nav.tabs{display:flex;background:#0b100d;border-top:1px solid var(--line)}
+nav.tabs{display:flex;background:#000000;border-top:1px solid var(--line)}
 nav.tabs button{flex:1;background:none;border-radius:0;padding:11px 4px 12px;color:var(--mut);font-size:13px}
 nav.tabs button.on{color:var(--acc);background:none;font-weight:700}
 .pad{padding:12px}
@@ -78,9 +78,9 @@ table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:ta
 th,td{padding:5px 3px;text-align:center;border-bottom:1px solid var(--line)}
 th{color:var(--mut);font-weight:600}
 td.l,th.l{text-align:left}
-tr.curRow td{background:#4cc27a26}tr.curRow td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
-.x1{background:#4cc27a26}
-td.x2{background:var(--acc);color:#06150c;font-weight:800;border-radius:6px}
+tr.curRow td{background:#ff990026}tr.curRow td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
+.x1{background:#ff990026}
+td.x2{background:var(--acc);color:#000;font-weight:800;border-radius:6px}
 tr:has(td.x1) td.x1:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 .banner{background:var(--warn);color:#000;padding:8px 12px;display:flex;gap:8px;align-items:center;font-weight:600}
 .banner button{background:#0003}
@@ -98,7 +98,7 @@ tr:has(td.x1) td.x1:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 #photo{width:100%;border-radius:10px;display:block}
 .warnTxt{color:var(--warn)}
 .hide{display:none!important}
-.liveDot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--acc);margin-right:5px;vertical-align:middle;animation:pulse 1.2s infinite}@keyframes pulse{0%{box-shadow:0 0 0 0 #4cc27a99}100%{box-shadow:0 0 0 8px #4cc27a00}}
+.liveDot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--acc);margin-right:5px;vertical-align:middle;animation:pulse 1.2s infinite}@keyframes pulse{0%{box-shadow:0 0 0 0 #ff990099}100%{box-shadow:0 0 0 8px #ff990000}}
 .windArrow{display:inline-block;transition:transform .3s}
 </style>
 </head>
@@ -123,6 +123,6 @@ tr:has(td.x1) td.x1:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/leaflet-rotate@0.2.8/dist/leaflet-rotate.js"></script>
-<script src="app.js?v=14"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

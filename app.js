@@ -580,8 +580,8 @@ function drawMap() {
   // shots
   if (S && S.holes[viewHole]) { // shot trail: tee → each ball
     const trail = [teePos(h)];
-    S.holes[viewHole].shots.forEach(s => { if (s.pos && (!s.g || s.g.counts) && !s.gimme) { trail.push(s.pos); L.circleMarker(s.pos, {radius: 5, color: '#fff', weight: 1, fillColor: '#4cc27a', fillOpacity: 1, interactive: false}).addTo(layers); } });
-    if (trail.length > 1) L.polyline(trail, {color: '#4cc27a', weight: 2, dashArray: '2 5', interactive: false}).addTo(layers);
+    S.holes[viewHole].shots.forEach(s => { if (s.pos && (!s.g || s.g.counts) && !s.gimme) { trail.push(s.pos); L.circleMarker(s.pos, {radius: 5, color: '#fff', weight: 1, fillColor: '#ff9900', fillOpacity: 1, interactive: false}).addTo(layers); } });
+    if (trail.length > 1) L.polyline(trail, {color: '#ff9900', weight: 2, dashArray: '2 5', interactive: false}).addTo(layers);
   }
   fitHole(false);
 }
