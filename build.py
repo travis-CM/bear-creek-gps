@@ -102,5 +102,34 @@ cm=np.clip(np.round((b-130.0)*100),0,65535).astype('<u2')
 cm.tofile('dem.bin')
 out['dem']={'n':32.875,'s':32.845,'w':-97.075,'e':-97.040,'cols':W,'rows':W,'base':130.0,'scale':0.01,'units':'m'}
 print('dem', b.min(), b.max(), file=sys.stderr)
+
+# ---- per-green 1 m lidar grids (USGS 3DEP) for the green-slope view ----
+import urllib.request, io, time
+def green_grid(g):
+    lats = [p[0] for p in g]; lons = [p[1] for p in g]
+    m = 6.0
+    n, s_ = max(lats) + m / KY, min(lats) - m / KY
+    e, w = max(lons) + m / KX, min(lons) - m / KX
+    cols = max(8, int(round((e - w) * KX))); rows = max(8, int(round((n - s_) * KY)))
+    u = ('https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage'
+         f'?bbox={w},{s_},{e},{n}&bboxSR=4326&imageSR=4326&size={cols},{rows}&format=tiff&pixelType=F32'
+         '&interpolation=RSP_BilinearInterpolation&f=image')
+    for _ in range(4):
+        try:
+            data = urllib.request.urlopen(u, timeout=60).read()
+            a = np.array(Image.open(io.BytesIO(data)), dtype=np.float32)
+            if a.shape != (rows, cols) or a.min() < 50: raise ValueError('bad grid')
+            base = float(np.floor(a.min() * 100) / 100)
+            return {'n': n, 's': s_, 'w': w, 'e': e, 'rows': rows, 'cols': cols, 'base': base,
+                    'cm': [int(round((v - base) * 100)) for v in a.flatten().tolist()]}
+        except Exception as ex:
+            time.sleep(3)
+    return None
+ok = 0
+for cname, cdata in out['courses'].items():
+    for h in cdata['holes']:
+        gz = green_grid(h['green'])
+        if gz: h['gz'] = gz; ok += 1
+print('green grids', ok, file=sys.stderr)
 json.dump(out, open('course.json', 'w'), separators=(',', ':'))
 print('course.json', os.path.getsize('course.json'), file=sys.stderr)

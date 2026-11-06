@@ -131,8 +131,19 @@ function pinFromDepth(h, depthYd, latYd) {
 let DEM = null;
 async function loadDEM() { try { const buf = await (await fetch('dem.bin')).arrayBuffer(); DEM = new Uint16Array(buf); render(); } catch (e) {} }
 const liveElev = {};
+function greenGridAt(p) { // feet, from the 1 m lidar grid of whichever green p is on
+  for (const cn in C.courses) for (const h of C.courses[cn].holes) {
+    const g = h.gz; if (!g || p[0] > g.n || p[0] < g.s || p[1] < g.w || p[1] > g.e) continue;
+    const r = (g.n - p[0]) / (g.n - g.s) * (g.rows - 1), q = (p[1] - g.w) / (g.e - g.w) * (g.cols - 1);
+    const r0 = Math.min(g.rows - 2, Math.floor(r)), q0 = Math.min(g.cols - 2, Math.floor(q)), fr = r - r0, fq = q - q0, v = (a, b) => g.cm[a * g.cols + b];
+    const cm = v(r0, q0) * (1 - fr) * (1 - fq) + v(r0, q0 + 1) * (1 - fr) * fq + v(r0 + 1, q0) * fr * (1 - fq) + v(r0 + 1, q0 + 1) * fr * fq;
+    return (g.base + cm / 100) * 3.28084;
+  }
+  return null;
+}
 function elevAt(p) { // feet
   if (!p) return null;
+  const gg = greenGridAt(p); if (gg != null) return gg;
   const m = C.dem;
   if (DEM && p[0] <= m.n && p[0] >= m.s && p[1] >= m.w && p[1] <= m.e) {
     const r = (m.n - p[0]) / (m.n - m.s) * (m.rows - 1), q = (p[1] - m.w) / (m.e - m.w) * (m.cols - 1);
@@ -320,6 +331,33 @@ function rel(n) {
   if (st.adj != null) return st.adj;                   // ± used with no shots logged
   return st.done ? 0 : null;
 }
+function holeData(r, n) { return C.courses[r.course].holes[n - 1]; }
+function holeStats(r, n) { // auto from logged shots, overridable by taps
+  const st = r.holes[n]; if (!st) return null;
+  const h = holeData(r, n), sh = st.shots.filter(s => !s.g || s.g.counts);
+  const putts = st.putts != null ? st.putts : sh.filter(s => s.t === 'Putt').length;
+  let gir = st.gir != null ? st.gir : null;
+  if (gir == null && sh.length) { const k = sh.findIndex(s => s.pos && (inside(s.pos, h.green) || polyNear(s.pos, h.green) < 2)); if (k >= 0) gir = (k + 1) <= h.par - 2; else if (st.done) gir = sh.length - putts <= h.par - 2 && putts > 0; }
+  let fir = st.fir != null ? st.fir : null;
+  if (fir == null && h.par >= 4 && sh[0] && sh[0].pos && (h.fw || []).length) {
+    if (h.fw.some(f => inside(sh[0].pos, f))) fir = 'hit';
+    else { const v0 = xy(greenC(h), h.line[0]), v1 = xy(sh[0].pos, h.line[0]); fir = (v0[0] * v1[1] - v0[1] * v1[0]) > 0 ? 'L' : 'R'; }
+  }
+  return {putts, gir, fir, par: h.par};
+}
+function setStat(n, k, v) { const st = hs(n); st[k] = (st[k] === v ? null : v); save(); render(); }
+function bumpPutts(d) { const st = hs(viewHole), cur = holeStats(S, viewHole).putts; st.putts = Math.max(0, cur + d); save(); render(); }
+function roundStats(r) {
+  let fh = 0, ft = 0, gh = 0, gt = 0, putts = 0, ph = 0, rel = 0, thru = 0; const dist = {eagle: 0, birdie: 0, par: 0, bogey: 0, dbl: 0};
+  r.order.forEach(n => { const st = r.holes[n]; if (!st || !st.done) return; const s = holeStats(r, n), h = holeData(r, n);
+    if (s.fir != null && h.par >= 4) { ft++; if (s.fir === 'hit') fh++; }
+    if (s.gir != null) { gt++; if (s.gir) gh++; }
+    putts += s.putts; ph++;
+    const c = st.shots.filter(x => !x.g || x.g.counts).length, v = st.manual && st.adj != null ? st.adj : c ? c - h.par : (st.adj || 0);
+    rel += v; thru++; dist[v <= -2 ? 'eagle' : v === -1 ? 'birdie' : v === 0 ? 'par' : v === 1 ? 'bogey' : 'dbl']++; });
+  return {fh, ft, gh, gt, putts, ph, rel, thru, dist};
+}
+const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '—';
 function relStr(r) { return r == null ? '—' : r === 0 ? 'E' : (r > 0 ? '+' + r : '−' + Math.abs(r)); }
 function relCls(r) { return r < 0 ? 'under' : r > 0 ? 'over' : ''; }
 function totals() { let r = 0, thru = 0, str = 0; S.order.forEach(n => { const v = rel(n); if (v != null && (S.holes[n].done || S.holes[n].manual)) { r += v; thru++; str += H(n).par + v; } }); return {r, thru, str}; }
@@ -456,7 +494,7 @@ function addGimmick() {
 /* ---------------- map ---------------- */
 function initMap() {
   if (map) return;
-  map = L.map('map', {zoomControl: false, attributionControl: true, tap: true, maxZoom: 21});
+  map = L.map('map', {zoomControl: false, attributionControl: true, tap: true, maxZoom: 21, rotate: true, bearing: 0, touchRotate: false, shiftKeyRotate: false, rotateControl: false, compassBearing: false});
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxNativeZoom: 19, maxZoom: 21, attribution: 'Esri, Maxar · © OpenStreetMap'}).addTo(map);
   layers = L.layerGroup().addTo(map);
   map.on('click', e => onMapTap([e.latlng.lat, e.latlng.lng]));
@@ -468,11 +506,44 @@ function onMapTap(p) {
   else if (tapMode === 'me') { manualMe = p; tapMode = 'target'; }
   render();
 }
+let holeUp = (load(LS_PREF) || {}).holeUp !== false, flying = null;
+function holeBearing(h) { return bearing(teePos(h), greenC(h)); }
+// fit points into the map with the map rotated so the hole runs bottom (tee) -> top (green)
+function fitRotated(pts, b) {
+  const sz = map.getSize(), c = centroid(pts.concat([pts[0]]).slice(0, -1).length ? pts : pts);
+  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9; const o = pts[0], t = toRad(b);
+  pts.forEach(p => { const v = xy(p, o), x = v[0] * Math.cos(t) - v[1] * Math.sin(t), y = v[0] * Math.sin(t) + v[1] * Math.cos(t); minx = Math.min(minx, x); maxx = Math.max(maxx, x); miny = Math.min(miny, y); maxy = Math.max(maxy, y); });
+  const cx = (minx + maxx) / 2, cy = (miny + maxy) / 2, ctr = fromXY([cx * Math.cos(t) + cy * Math.sin(t), -cx * Math.sin(t) + cy * Math.cos(t)], o);
+  const w = Math.max(20, maxx - minx), hgt = Math.max(20, maxy - miny);
+  const mpp = Math.max(w / Math.max(50, sz.x - 40), hgt / Math.max(50, sz.y - 40));
+  const z = Math.min(19, Math.log2(156543.03 * Math.cos(toRad(ctr[0])) / mpp));
+  map.setView(ctr, z, {animate: false});
+}
 function fitHole(force) {
-  if (!map) return;
+  if (!map || flying) return;
   const h = H(viewHole), pts = h.line.concat(h.green).concat([teePos(h)]);
   const m = me(); if (m && lineDist(m, h.line) < 250) pts.push(m);
-  if (force || mapHole !== viewHole) { map.fitBounds(L.latLngBounds(pts), {padding: [24, 24], maxZoom: 19}); mapHole = viewHole; }
+  if (force || mapHole !== viewHole) {
+    const b = holeUp ? holeBearing(h) : 0;
+    if (map.setBearing) map.setBearing(-b);
+    if (holeUp && map.setBearing) fitRotated(pts, b); else map.fitBounds(L.latLngBounds(pts), {padding: [24, 24], maxZoom: 19});
+    mapHole = viewHole;
+  }
+}
+function toggleHoleUp() { holeUp = !holeUp; const p = load(LS_PREF) || {}; p.holeUp = holeUp; try { localStorage.setItem(LS_PREF, JSON.stringify(Object.assign(pref, {holeUp}))); } catch (e) {} fitHole(true); render(); }
+function flyover() { // tee -> green fly-along, then back to the whole hole
+  if (!map) return;
+  if (flying) { clearTimeout(flying); flying = null; fitHole(true); return; }
+  const h = H(viewHole), path = backLine(h).slice(0, -1).reverse(), tee = teePos(h), total = distM(tee, greenC(h));
+  const b = holeBearing(h); if (map.setBearing) map.setBearing(holeUp ? -b : 0);
+  const stops = []; for (let d = 0; d <= total; d += 35) stops.push(along([tee].concat(path.slice(1)), d)); stops.push(greenC(h));
+  let i = 0;
+  const step = () => {
+    if (i >= stops.length) { flying = setTimeout(() => { flying = null; fitHole(true); }, 1800); return; }
+    map.setView(stops[i], i === stops.length - 1 ? 19.5 : 18, {animate: true, duration: 0.5}); i++;
+    flying = setTimeout(step, 520);
+  };
+  map.setView(stops[0], 18, {animate: false}); flying = setTimeout(step, 400);
 }
 const icon = (cls, html) => L.divIcon({className: '', html: `<div class="${cls}">${html || ''}</div>`, iconSize: null});
 function drawMap() {
@@ -484,6 +555,9 @@ function drawMap() {
   L.polyline(h.line, {color: '#fff', weight: 1.5, dashArray: '4 6', opacity: .7, interactive: false}).addTo(layers);
   TEES.forEach(t => { const p = teePos(h, t); L.circleMarker(p, {radius: 5, color: '#000', weight: 1, fillColor: {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33'}[t], fillOpacity: 1, interactive: false}).addTo(layers); });
   [100, 150, 200, 250].forEach(y => { const p = along(backLine(h), y / YD); if (yds(from, greenC(h)) > y + 10) { L.marker(p, {icon: icon('dot'), interactive: false}).addTo(layers); L.marker(p, {icon: icon('lay', y), interactive: false}).addTo(layers); } });
+  { const li = layupInfo(from, viewHole);
+    if (li.corner) L.circleMarker(li.corner.p, {radius: 7, color: '#fff', weight: 2, fillColor: '#5aa9ef', fillOpacity: .9, interactive: false}).addTo(layers);
+    if (li.layup) { L.circleMarker(li.layup.p, {radius: 7, color: '#000', weight: 2, fillColor: '#f0b43c', fillOpacity: .95, interactive: false}).addTo(layers); } }
   L.marker(pin, {icon: icon('flag', '⛳'), interactive: false}).addTo(layers);
   L.marker(from, {icon: icon('me'), interactive: false}).addTo(layers);
   if (gps && onCourse(gps.p) && !manualMe) L.circle(gps.p, {radius: gps.acc, color: '#2f8cff', weight: 1, fillOpacity: .08, interactive: false}).addTo(layers);
@@ -504,6 +578,64 @@ function drawMap() {
 }
 
 /* ---------------- hazards ---------------- */
+function layupInfo(from, n) {
+  const h = H(n), pin = pinOf(n), D = yds(from, pin), L0 = pref.layup || 100, out = {};
+  if (D > L0 + 40) { const lp = along(backLine(h), L0 / YD); if (yds(from, lp) > 30) out.layup = {p: lp, leave: L0, d: yds(from, lp), pl: playsLike(from, lp).total}; }
+  const l = h.line, v0 = xy(pin, from), Lv = Math.hypot(v0[0], v0[1]) || 1;
+  for (let i = 1; i < l.length - 1; i++) {
+    const b1 = bearing(l[i - 1], l[i]), b2 = bearing(l[i], l[i + 1]); let turn = ((b2 - b1 + 540) % 360) - 180;
+    if (Math.abs(turn) < 15) continue;
+    const cv = xy(l[i], from), proj = (cv[0] * v0[0] + cv[1] * v0[1]) / Lv, dc = yds(from, l[i]);
+    if (proj < 0 || dc < 40) continue;
+    out.corner = {p: l[i], dir: turn > 0 ? 'right' : 'left', d: dc, pl: playsLike(from, l[i]).total, toPin: yds(l[i], pin)};
+    break;
+  }
+  return out;
+}
+function greenView(n, from) {
+  const h = H(n), g = h.gz; if (!g) return '';
+  const gc = greenC(h), pin = pinOf(n), b = toRad(bearing(from, gc));
+  const R = p => { const v = xy(p, gc); return [v[0] * Math.cos(b) - v[1] * Math.sin(b), v[0] * Math.sin(b) + v[1] * Math.cos(b)]; }; // approach = up
+  const poly = h.green.map(R); let mx = 0; poly.forEach(p => mx = Math.max(mx, Math.abs(p[0]), Math.abs(p[1]))); const SC = 130 / (mx + 3);
+  const P = v => [(150 + v[0] * SC).toFixed(1), (150 - v[1] * SC).toFixed(1)];
+  const zAt = (r, c) => g.cm[r * g.cols + c], latOf = r => g.n - (g.n - g.s) * r / (g.rows - 1), lonOf = c => g.w + (g.e - g.w) * c / (g.cols - 1);
+  const cells = []; let zmin = 1e9, zmax = -1e9;
+  for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) { const p = [latOf(r), lonOf(c)]; if (!inside(p, h.green)) continue; const z = zAt(r, c); cells.push({p, r, c, z}); zmin = Math.min(zmin, z); zmax = Math.max(zmax, z); }
+  if (cells.length < 6) return '';
+  // plane fit -> overall tilt
+  let sx = 0, sy = 0, sz = 0, sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0; const N = cells.length;
+  cells.forEach(k => { const v = xy(k.p, gc); sx += v[0]; sy += v[1]; sz += k.z; sxx += v[0] * v[0]; syy += v[1] * v[1]; sxy += v[0] * v[1]; sxz += v[0] * k.z; syz += v[1] * k.z; });
+  const mx_ = sx / N, my_ = sy / N, mz = sz / N, cxx = sxx / N - mx_ * mx_, cyy = syy / N - my_ * my_, cxy = sxy / N - mx_ * my_, cxz = sxz / N - mx_ * mz, cyz = syz / N - my_ * mz;
+  const det = cxx * cyy - cxy * cxy || 1, ga = (cxz * cyy - cyz * cxy) / det, gb = (cyz * cxx - cxz * cxy) / det; // cm per m = %
+  const tilt = Math.hypot(ga, gb), down = [-ga, -gb], dr = [down[0] * Math.cos(b) - down[1] * Math.sin(b), down[0] * Math.sin(b) + down[1] * Math.cos(b)];
+  const ang = (Math.atan2(dr[0], dr[1]) * 180 / Math.PI + 360) % 360; // 0 = away from you (back), 180 = toward you (front)
+  const dirTxt = ['back', 'back-right', 'right', 'front-right', 'front', 'front-left', 'left', 'back-left'][Math.round(ang / 45) % 8];
+  const col = t => { const a1 = [31, 107, 58], a2 = [216, 240, 138]; return `rgb(${a1.map((v, i) => Math.round(v + (a2[i] - v) * t)).join(',')})`; };
+  const cs = Math.max(2.6, SC * 1.6);
+  let svg = cells.map(k => { const q = P(R(k.p)); return `<rect x="${(q[0] - cs / 2).toFixed(1)}" y="${(q[1] - cs / 2).toFixed(1)}" width="${cs.toFixed(1)}" height="${cs.toFixed(1)}" fill="${col((k.z - zmin) / Math.max(1, zmax - zmin))}"/>`; }).join('');
+  // slope arrows every ~3 m (downhill)
+  const stp = 4; let arrows = '';
+  cells.filter(k => k.r % stp === 1 && k.c % stp === 1 && k.r > 0 && k.c > 0 && k.r < g.rows - 1 && k.c < g.cols - 1).forEach(k => {
+    const dzx = (zAt(k.r, k.c + 1) - zAt(k.r, k.c - 1)) / (2 * (g.e - g.w) * 111320 * Math.cos(toRad(gc[0])) / (g.cols - 1));
+    const dzy = (zAt(k.r - 1, k.c) - zAt(k.r + 1, k.c)) / (2 * (g.n - g.s) * 110540 / (g.rows - 1));
+    const sl = Math.hypot(dzx, dzy); if (sl < 0.5) return;
+    const v = [-dzx / sl, -dzy / sl], vr = [v[0] * Math.cos(b) - v[1] * Math.sin(b), v[0] * Math.sin(b) + v[1] * Math.cos(b)];
+    const q = P(R(k.p)), L1 = Math.min(16, 5 + sl * 3), x2 = +q[0] + vr[0] * L1, y2 = +q[1] - vr[1] * L1;
+    const c = sl < 1.5 ? '#ffffff' : sl < 3 ? '#f0b43c' : '#ef6a5a';
+    arrows += `<line x1="${q[0]}" y1="${q[1]}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${c}" stroke-width="2" marker-end="url(#ah${c.slice(1)})"/>`;
+  });
+  const mk = c => `<marker id="ah${c.slice(1)}" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="${c}"/></marker>`;
+  const pq = P(R(pin)), fbE = (elevAt(pin) != null && elevAt(gc) != null);
+  const ft = ((zmax - zmin) / 100 * 3.28084).toFixed(1);
+  return `<div class="card"><div class="row"><b style="flex:2">🟢 Green slope — hole ${n}</b><span class="small mut" style="text-align:right">USGS 1 m lidar</span></div>
+    <svg viewBox="0 0 300 300" style="width:100%;max-width:340px;display:block;margin:6px auto;background:#0b1410;border-radius:12px">
+      <defs>${mk('#ffffff')}${mk('#f0b43c')}${mk('#ef6a5a')}</defs>
+      ${svg}<polygon points="${poly.map(p => P(p).join(',')).join(' ')}" fill="none" stroke="#fff" stroke-width="2"/>${arrows}
+      <circle cx="${pq[0]}" cy="${pq[1]}" r="6" fill="#ef6a5a" stroke="#fff" stroke-width="2"/>
+      <text x="150" y="292" fill="#9fb0a6" font-size="13" text-anchor="middle">▲ you approach from here</text></svg>
+    <div style="font-size:18px"><b>Falls ${dirTxt}</b> · ${tilt.toFixed(1)}% overall · ${ft} ft high-to-low</div>
+    <div class="small mut">Arrows run downhill: white &lt;1.5%, yellow 1.5–3%, red &gt;3%. Lighter = higher ground.</div></div>`;
+}
 function hazardsFrom(from, h) {
   const pin = pinOf(h.n), D = distM(from, pin), v = xy(pin, from), L0 = Math.hypot(v[0], v[1]) || 1, u = [v[0] / L0, v[1] / L0];
   const g = greenC(h), res = [];
@@ -570,8 +702,10 @@ function liveHtml(part) {
     <div><div class="lab">Back</div><div class="num sm2">${Math.round(fb.b)}</div><div class="pl">plays ${Math.round(fb.b + (pl.total - pl.d))}</div></div></div>
   <div style="padding:0 12px"><div class="chips">${plChips(pl)}</div><div class="chips">${wxHtml}</div></div>
   ${tgtHtml}
+  ${(() => { const li = layupInfo(from, n); if (!li.layup && !li.corner) return ''; return `<div class="card">${li.corner ? `<div class="hz"><span>↪️ Dogleg ${li.corner.dir} — to the corner</span><span><b>${Math.round(li.corner.d)}</b> <span class="warnTxt">(${Math.round(li.corner.pl)})</span></span></div><div class="small mut" style="margin:-4px 0 4px">${Math.round(li.corner.toPin)} from the corner to the pin</div>` : ''}${li.layup ? `<div class="hz"><span>🎯 Lay up to leave ${li.layup.leave}</span><span><b>${Math.round(li.layup.d)}</b> <span class="warnTxt">(${Math.round(li.layup.pl)})</span></span></div>` : ''}</div>`; })()}
   ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS WITHIN 300 — reach / carry <span class="warnTxt">(plays like)</span></div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="warnTxt">(${Math.round(z.reachPl)})</span> <span class="k">/</span> <b>${Math.round(z.carry)}</b> <span class="warnTxt">(${Math.round(z.carryPl)})</span></span></div>`).join('')}</div>` : ''}
   ${h.note ? `<div class="card small">📝 ${esc(h.note)}</div>` : ''}
+  ${greenView(n, posFor(n))}
 `;
 }
 function liveUpdate() { // called on every GPS fix: refresh numbers + map overlays, keep the rest of the screen untouched
@@ -597,13 +731,18 @@ function renderHole() {
     <button onclick="stepHole(1)">▶</button></div>
   `;
   const bodyHtml = `
-  <div class="tapmodes"><button class="sm ${tapMode === 'target' ? 'on' : ''}" onclick="tapMode='target';render()">🎯 Target</button><button class="sm ${tapMode === 'pin' ? 'on' : ''}" onclick="tapMode='pin';render()">⛳ Set pin</button><button class="sm ${tapMode === 'me' ? 'on' : ''}" onclick="if(manualMe){manualMe=null;tapMode='target'}else tapMode='me';render()">📍 ${manualMe ? 'Use GPS' : 'Me'}</button><button class="sm" onclick="fitHole(true)">⤢</button></div>
+  <div class="tapmodes"><button class="sm ${tapMode === 'target' ? 'on' : ''}" onclick="tapMode='target';render()">🎯 Target</button><button class="sm ${tapMode === 'pin' ? 'on' : ''}" onclick="tapMode='pin';render()">⛳ Set pin</button><button class="sm ${tapMode === 'me' ? 'on' : ''}" onclick="if(manualMe){manualMe=null;tapMode='target'}else tapMode='me';render()">📍 ${manualMe ? 'Use GPS' : 'Me'}</button><button class="sm" onclick="fitHole(true)">⤢</button><button class="sm ${holeUp ? 'on' : ''}" onclick="toggleHoleUp()" title="Hole-up map">⬆︎</button><button class="sm" onclick="flyover()" title="Flyover">🎬</button></div>
   <div id="live">${liveHtml()}</div>
   ${S.preview ? `<div class="card"><b>Preview mode</b> — browsing holes only.<button class="pri" style="width:100%;margin-top:8px" onclick="S=null;render()">◀ Back to round setup</button></div>` : `<div class="card">
     <div class="row"><b style="flex:2">${S.mode === 'scramble' ? '👥 Team shots' : 'Shots'} · Hole ${n}</b><button class="sm" onclick="startDictation()">🎙 Dictate</button>${S.mode === 'scramble' ? '<button class="sm" onclick="gimmickSheet()">🎲 Gimmick</button>' : ''}</div>
     ${players}
     <div style="margin-top:8px">${shots || '<div class="mut small">No shots yet. After each shot, walk or drive to the ball you are playing next, then tap whose shot it was — the distance is measured from the tee or the last ball.</div>'}</div>
     <div class="score"><button class="pm" onclick="bump(-1)">−</button><div class="val"><div class="rel ${relCls(r)}">${r == null ? 'E' : relStr(r)}</div><div class="small mut">${r != null ? (h.par + r) + ' strokes' : 'tap ± to override'}${st.manual && counted(st) ? ' · <span class="warnTxt">override (' + counted(st) + ' logged)</span>' : ''}</div></div><button class="pm" onclick="bump(1)">+</button></div>
+    ${(() => { const s = holeStats(S, n) || {putts: 0, gir: null, fir: null}; const b = (on, txt, fn) => `<button class="sm ${on ? 'on' : ''}" onclick="${fn}">${txt}</button>`;
+      return `<div style="margin-top:10px;font-size:16px">${h.par >= 4 ? `<div class="row" style="margin-bottom:6px"><span style="flex:0 0 74px">Fairway</span>${b(s.fir === 'L', '⬅ Left', `setStat(${n},'fir','L')`)}${b(s.fir === 'hit', '✓ Hit', `setStat(${n},'fir','hit')`)}${b(s.fir === 'R', 'Right ➡', `setStat(${n},'fir','R')`)}</div>` : ''}
+        <div class="row" style="margin-bottom:6px"><span style="flex:0 0 74px">Green in reg</span>${b(s.gir === true, '✓ Yes', `setStat(${n},'gir',true)`)}${b(s.gir === false, '✗ No', `setStat(${n},'gir',false)`)}</div>
+        <div class="row"><span style="flex:0 0 74px">Putts</span><button class="sm" onclick="bumpPutts(-1)">−</button><b style="text-align:center;font-size:22px">${s.putts}</b><button class="sm" onclick="bumpPutts(1)">+</button></div>
+        <div class="small mut" style="margin-top:4px">Filled in automatically from your shots — tap to correct.</div></div>`; })()}
     <button style="width:100%;margin-top:10px;padding:12px;background:#3a3216;color:var(--warn);font-weight:700" onclick="gimme()">👌 Gimme — add the final stroke &amp; close hole ${n}</button>
     <button class="pri" style="width:100%;margin-top:8px;padding:14px" onclick="completeHole()">${st.done ? '✓ Completed — save & next' : 'Complete hole ' + n + (idx === order.length - 1 ? ' (finish round)' : '')}</button>
   </div>`}
@@ -720,6 +859,12 @@ function renderCard() {
     <div class="small mut">Started ${fmtClock(S.started)}${S.ended ? ' · finished ' + fmtClock(S.ended) : ''} · elapsed ${fmtDur((S.ended || Date.now()) - (S.started || Date.now()))}${pi && pi.done ? ` · pace target 4:12 → ${pi.diff > 0 ? pi.diff + ' min behind' : Math.abs(pi.diff) + ' min ahead'}` : ''}</div></div>
   <div class="card" style="padding:6px"><table><tr><th>#</th><th>Par</th><th>Hcp</th><th>Yds</th><th>Score</th><th>±</th><th>Time</th></tr>${half(1, 9, 'Out')}${half(10, 18, 'In')}</table>
     <div class="small mut" style="padding:6px">Hole time uses GPS arrival → departure when available, otherwise start → "Complete hole". Tap a row to open that hole.</div></div>
+  ${(() => { const s = roundStats(S); if (!s.thru) return '';
+    const past = Object.values(rounds()).filter(r => r.id !== S.id && r.order && r.started).map(r => ({r, s: roundStats(r)})).filter(x => x.s.thru >= 9).sort((x, y) => y.r.started - x.r.started).slice(0, 5);
+    return `<div class="card"><b>📊 ${S.mode === 'scramble' ? 'Team' : 'Your'} stats</b>
+      <div class="dist" style="margin:8px 0 0"><div><div class="lab">Fairways</div><div class="num sm2">${pct(s.fh, s.ft)}</div><div class="small mut">${s.fh}/${s.ft}</div></div><div><div class="lab">Greens (GIR)</div><div class="num sm2">${pct(s.gh, s.gt)}</div><div class="small mut">${s.gh}/${s.gt}</div></div><div><div class="lab">Putts</div><div class="num sm2">${s.putts}</div><div class="small mut">${(s.putts / Math.max(1, s.ph)).toFixed(1)}/hole</div></div></div>
+      <div class="small" style="margin-top:8px">${s.dist.eagle ? '🦅 ' + s.dist.eagle + ' eagle · ' : ''}🐦 ${s.dist.birdie} birdie · ${s.dist.par} par · ${s.dist.bogey} bogey · ${s.dist.dbl} double+</div>
+      ${past.length ? `<div style="margin-top:10px"><b>Trend — last ${past.length} round${past.length > 1 ? 's' : ''}</b><table style="margin-top:4px"><tr><th class="l">Date</th><th>Score</th><th>FIR</th><th>GIR</th><th>Putts/18</th></tr>${past.map(x => `<tr><td class="l">${new Date(x.r.started).toLocaleDateString([], {month: 'short', day: 'numeric'})}</td><td class="${relCls(x.s.rel)}">${relStr(x.s.rel)} <span class="mut small">(${x.s.thru})</span></td><td>${pct(x.s.fh, x.s.ft)}</td><td>${pct(x.s.gh, x.s.gt)}</td><td>${(x.s.putts / Math.max(1, x.s.ph) * 18).toFixed(0)}</td></tr>`).join('')}</table></div>` : ''}</div>`; })()}
   ${use}
   <div class="card" style="padding:6px"><div class="small mut" style="padding:4px 6px">All tees — your hole (${S.cur}) and tee (${S.tee}) highlighted</div>${scorecardTable(S.course, S.tee, S.ended ? null : S.cur, false)}</div>
   ${S.ended ? '' : `<div class="card"><b>Starting hole</b> <span class="small mut">(shotgun) — currently #${S.order[0]}</span>${startGrid('setStart(N)', S.order[0])}</div>`}
@@ -781,6 +926,7 @@ function renderInfo() {
     <div class="small" style="margin-top:6px"><a style="color:var(--acc)" href="tel:+19724563200">📞 Pro shop 972-456-3200</a> · 3500 Bear Creek Ct, DFW Airport, TX<br>
     <a style="color:var(--acc)" target="_blank" href="https://arcisgolf.com/clubs/bear-creek-golf-club/golf-course">Club website</a> · <a style="color:var(--acc)" target="_blank" href="https://bearcreektxpp.ezlinksgolf.com/index.html#/preSearch">Tee times</a></div></div>
   <div class="card row">${S ? `<button onclick="endRound()" style="background:#5a2620">Finish / new round</button>` : ''}<button onclick="requestWake();alert(wakeLock?'Screen will stay on':'Screen-on not supported here')">☀️ Keep screen on</button></div>
+  <div class="card"><b>Favorite layup distance</b><div class="small mut">Used for the "lay up to leave ___" number.</div><div class="row" style="margin-top:6px">${[60, 80, 100, 120, 140].map(v => `<button class="${(pref.layup || 100) === v ? 'on' : ''}" onclick="pref.layup=${v};savePref();render()">${v}</button>`).join('')}</div></div>
   <div class="card small mut">Map: Esri World Imagery · Hole/green/bunker shapes © OpenStreetMap contributors · Elevation: USGS 3DEP lidar (5 m grid) · Weather: Open-Meteo · Scorecard: GolfPass · Rating/slope: 18Birdies (men's; W = women's). Hole shapes are community-mapped; if a green looks off, drop the pin by tapping it.</div>`;
 }
 
