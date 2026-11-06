@@ -13,19 +13,21 @@ struct YardsLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: YardsAttributes.self) { ctx in
             let s = ctx.state
-            HStack(alignment: .center, spacing: 14) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("HOLE \(s.hole)").font(.system(size: 13, weight: .heavy)).foregroundStyle(.secondary)
-                    Text("Par \(s.par)").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+            VStack(spacing: 2) {
+                HStack {
+                    Text("HOLE \(s.hole)  ·  PAR \(s.par)").font(.system(size: 20, weight: .heavy)).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("plays \(s.plays)").font(.system(size: 30, weight: .heavy, design: .rounded)).foregroundStyle(.white)
                 }
-                Text("\(s.mid)").font(.system(size: 54, weight: .heavy, design: .rounded)).foregroundStyle(orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("plays \(s.plays)").font(.system(size: 17, weight: .bold)).foregroundStyle(.white)
-                    Text("F \(s.front)  ·  B \(s.back)").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                Text("\(s.mid)").font(.system(size: 104, weight: .heavy, design: .rounded)).foregroundStyle(orange)
+                    .minimumScaleFactor(0.6).lineLimit(1).frame(maxWidth: .infinity)
+                HStack {
+                    Text("FRONT \(s.front)").font(.system(size: 24, weight: .bold)).foregroundStyle(.white)
+                    Spacer()
+                    Text("BACK \(s.back)").font(.system(size: 24, weight: .bold)).foregroundStyle(.white)
                 }
-                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 16).padding(.vertical, 10)
+            .padding(.horizontal, 20).padding(.vertical, 12)
             .activityBackgroundTint(.black)
         } dynamicIsland: { ctx in
             let s = ctx.state
