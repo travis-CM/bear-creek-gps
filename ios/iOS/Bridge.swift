@@ -79,6 +79,8 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
             pushWatch()
         case "live":
             updateActivity(body)
+        case "endlive":
+            endActivity()
         case "ready":
             announce()
             pushWatch()
@@ -101,6 +103,14 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
             } else if UIApplication.shared.applicationState == .active {
                 self.activity = try? Activity.request(attributes: YardsAttributes(name: "GolfHub"), content: content)
             }
+        }
+    }
+
+    private func endActivity() {
+        DispatchQueue.main.async {
+            let list = Activity<YardsAttributes>.activities
+            self.activity = nil
+            Task { for a in list { await a.end(nil, dismissalPolicy: .immediate) } }
         }
     }
 

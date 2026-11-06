@@ -45,6 +45,7 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     private var dem: [UInt16] = []
     private var demMeta: [String: Double] = [:]
     private var started = false
+    private var roaming = false
     private let yd = 1.09361
 
     override init() {
@@ -203,6 +204,13 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let l = locations.last, l.horizontalAccuracy >= 0 else { return }
         last = l
+        // power: walking/riding between shots needs fewer fixes; standing at the ball gets full accuracy and every fix
+        let sp = l.speed >= 0 ? l.speed : 0
+        if sp > 1.3, !roaming {
+            roaming = true; manager.distanceFilter = 5
+        } else if sp < 1.0, roaming {
+            roaming = false; manager.distanceFilter = kCLDistanceFilterNone
+        }
         recompute()
         if stream, WCSession.isSupported(), WCSession.default.isReachable {
             WCSession.default.sendMessage(["lat": l.coordinate.latitude, "lon": l.coordinate.longitude,

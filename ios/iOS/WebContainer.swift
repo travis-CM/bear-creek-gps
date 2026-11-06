@@ -50,9 +50,18 @@ struct WebContainer: UIViewRepresentable {
             return nil
         }
 
+        private var triedSaved = false
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { webView.load(URLRequest(url: WebContainer.home)) }
+            // no signal: open the last saved copy of the app first, then keep retrying the live one
+            if !triedSaved {
+                triedSaved = true
+                webView.load(URLRequest(url: WebContainer.home, cachePolicy: .returnCacheDataDontLoad, timeoutInterval: 10))
+            } else {
+                triedSaved = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { webView.load(URLRequest(url: WebContainer.home)) }
+            }
         }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { triedSaved = false }
 
         // JavaScript alert() / confirm() used by the web app
         func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,

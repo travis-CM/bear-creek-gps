@@ -129,7 +129,15 @@ function pinFromDepth(h, depthYd, latYd) {
 
 /* ---------------- elevation (USGS 3DEP 1 m lidar grid + live fallback) ---------------- */
 let DEM = null;
-async function loadDEM() { try { const buf = await (await fetch('dem.bin')).arrayBuffer(); DEM = new Uint16Array(buf); render(); } catch (e) {} }
+async function cachedFetch(url, ms) { // network first, but if it is slow (weak signal) use the copy saved on this phone
+  let c = null; try { c = await caches.open('bcgps-data'); } catch (e) {}
+  const net = fetch(url).then(async r => { if (!r.ok) throw new Error('bad'); if (c) { try { await c.put(url, r.clone()); } catch (e) {} } return r; });
+  if (!c) return net;
+  const hit = await c.match(url);
+  if (!hit) return net;
+  return Promise.race([net, new Promise((_, rej) => setTimeout(rej, ms || 3000))]).catch(() => hit);
+}
+async function loadDEM() { try { const buf = await (await cachedFetch('dem.bin', 5000)).arrayBuffer(); DEM = new Uint16Array(buf); render(); } catch (e) {} }
 const liveElev = {};
 function greenGridAt(p) { // feet, from the 1 m lidar grid of whichever green p is on
   for (const cn in C.courses) for (const h of C.courses[cn].holes) {
@@ -269,7 +277,8 @@ function pushNativeState() { // tell the iPhone app (and through it the Watch) w
   const st = {type: 'state', course: course(), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]], pinSet: !!(S && S.holes[n] && S.holes[n].pin)};
   if (c) st.wx = {t: c.temperature_2m, rh: c.relative_humidity_2m, p: c.surface_pressure, ws: c.wind_speed_10m, wd: c.wind_direction_10m};
   const k = JSON.stringify(st); if (k !== lastNativeState) { lastNativeState = k; postNative(st); }
-  try { // yardages for the lock-screen Live Activity
+  try { // yardages for the lock-screen Live Activity (only while a round is on)
+    if (!S || S.ended) return;
     const h = H(n), from = posFor(n), pin = p, hits = rayHits(from, pin, h.green);
     const f = inside(from, h.green) ? 0 : hits.length >= 2 ? hits[0] * YD : polyNear(from, h.green) * YD;
     const b = inside(from, h.green) ? polyFar(from, h.green) * YD : hits.length >= 2 ? hits[hits.length - 1] * YD : polyFar(from, h.green) * YD;
@@ -279,6 +288,7 @@ function pushNativeState() { // tell the iPhone app (and through it the Watch) w
   } catch (e) {}
 }
 let lastLive = '';
+function endLive() { lastLive = ''; postNative({type: 'endlive'}); }
 function startGPS() {
   if (NATIVE) { postNative({type: 'ready'}); return; } // the iPhone app feeds GPS (phone or watch) through bcNative.loc
   if (!navigator.geolocation) { gpsErr = 'GPS not supported'; return; }
@@ -410,7 +420,7 @@ function completeHole() {
   st.done = true; st.endTs = Date.now(); if (!st.startTs) st.startTs = S.started;
   if (!counted(st) && st.adj == null) st.adj = 0;
   const i = S.order.indexOf(n);
-  if (i === S.order.length - 1) { S.ended = Date.now(); save(); tab = 'card'; render(); return; }
+  if (i === S.order.length - 1) { S.ended = Date.now(); save(); endLive(); tab = 'card'; render(); return; }
   const nx = S.order[i + 1]; S.cur = nx; viewHole = nx; target = null;
   const ns = hs(nx); if (!ns.startTs) ns.startTs = Date.now();
   save(); render(); fitHole(true);
@@ -501,10 +511,52 @@ function addGimmick() {
 }
 
 /* ---------------- map ---------------- */
+const TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const CachedTiles = L.TileLayer.extend({ // satellite tiles are saved on the phone: instant on revisit, works with no signal
+  createTile(coords, done) {
+    const img = document.createElement('img'); img.alt = ''; img.setAttribute('role', 'presentation');
+    const url = this.getTileUrl(coords);
+    (async () => {
+      try {
+        const c = await caches.open('bcgps-tiles'); let r = await c.match(url);
+        if (!r) { r = await fetch(url); if (!r.ok) throw new Error('bad'); c.put(url, r.clone()); }
+        const u = URL.createObjectURL(await r.blob());
+        img.onload = img.onerror = () => { URL.revokeObjectURL(u); done(null, img); }; img.src = u;
+      } catch (e) { img.onload = img.onerror = () => done(null, img); img.src = url; }
+    })();
+    return img;
+  }
+});
+function tileXY(lat, lon, z) { const n = 2 ** z, r = lat * Math.PI / 180; return [Math.floor((lon + 180) / 360 * n), Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n)]; }
+function courseTiles() {
+  let a = 90, b = -90, c = 180, d = -180;
+  Object.values(C.courses).forEach(cr => cr.holes.forEach(h => h.line.concat(h.green).forEach(p => { a = Math.min(a, p[0]); b = Math.max(b, p[0]); c = Math.min(c, p[1]); d = Math.max(d, p[1]); })));
+  a -= .002; b += .002; c -= .0025; d += .0025;
+  const out = [];
+  for (let z = 15; z <= 19; z++) { const t1 = tileXY(b, c, z), t2 = tileXY(a, d, z); for (let x = t1[0]; x <= t2[0]; x++) for (let y = t1[1]; y <= t2[1]; y++) out.push(TILE_URL.replace('{z}', z).replace('{y}', y).replace('{x}', x)); }
+  return out;
+}
+let offBusy = false;
+async function downloadOffline() {
+  if (offBusy) return;
+  const list = courseTiles();
+  if (!confirm('Save the satellite map of both courses on this phone (about ' + Math.round(list.length * 0.022) + ' MB, ' + list.length + ' tiles)? Best on Wi-Fi.')) return;
+  offBusy = true; const st = $('#offStat'); let done = 0, fail = 0;
+  try {
+    const c = await caches.open('bcgps-tiles'); let i = 0;
+    const worker = async () => { while (i < list.length) { const u = list[i++]; try { if (!(await c.match(u))) { const r = await fetch(u); if (!r.ok) throw new Error('bad'); await c.put(u, r); } } catch (e) { fail++; } done++; if (st && done % 10 === 0) st.textContent = 'Saving… ' + Math.round(done / list.length * 100) + '%'; } };
+    await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+    if (!fail) { try { localStorage.setItem('bc_offline', String(Date.now())); } catch (e) {} }
+    if (st) st.textContent = fail ? 'Saved with ' + fail + ' missing tiles — try again on better signal.' : '✅ Saved for offline use.';
+  } catch (e) { if (st) st.textContent = 'Could not save maps on this device.'; }
+  offBusy = false;
+}
+function offlineStatus() { let t = null; try { t = localStorage.getItem('bc_offline'); } catch (e) {} return t ? '✅ Saved ' + new Date(+t).toLocaleDateString([], {month: 'short', day: 'numeric'}) : 'Not saved yet'; }
 function initMap() {
   if (map) return;
   map = L.map('map', {zoomControl: false, attributionControl: true, tap: true, maxZoom: 21, rotate: true, bearing: 0, touchRotate: false, shiftKeyRotate: false, rotateControl: false, compassBearing: false});
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxNativeZoom: 19, maxZoom: 21, attribution: 'Esri, Maxar · © OpenStreetMap'}).addTo(map);
+  new CachedTiles(TILE_URL, {maxNativeZoom: 19, maxZoom: 21, attribution: 'Esri, Maxar · © OpenStreetMap'}).addTo(map);
+  ((C && C.creeks) || []).forEach(p => L.polygon(p, {color: '#58a8ff', weight: 1, fillColor: '#58a8ff', fillOpacity: .35, interactive: false}).addTo(map)); // drawn once, not on every GPS fix
   layers = L.layerGroup().addTo(map);
   map.on('click', e => onMapTap([e.latlng.lat, e.latlng.lng]));
   map.on('contextmenu', e => { target = [e.latlng.lat, e.latlng.lng]; render(); });
@@ -559,7 +611,6 @@ function drawMap() {
   initMap(); layers.clearLayers();
   const h = H(viewHole), pin = pinOf(viewHole), from = posFor(viewHole);
   (h.fw || []).forEach(f => L.polygon(f, {color: '#7fdc8f', weight: 1, fillOpacity: .05, interactive: false}).addTo(layers));
-  ((C && C.creeks) || []).forEach(p => L.polygon(p, {color: '#58a8ff', weight: 1, fillColor: '#58a8ff', fillOpacity: .35, interactive: false}).addTo(layers));
   h.hz.forEach(z => L.polygon(z.p, {color: z.t === 'b' ? '#f3dc9b' : '#58a8ff', weight: 2, fillOpacity: .15, interactive: false}).addTo(layers));
   L.polygon(h.green, {color: '#fff', weight: 2, fillOpacity: .08, interactive: false}).addTo(layers);
   L.polyline(h.line, {color: '#fff', weight: 1.5, dashArray: '4 6', opacity: .7, interactive: false}).addTo(layers);
@@ -720,8 +771,12 @@ function liveHtml(part) {
 }
 function liveUpdate() { // called on every GPS fix: refresh numbers + map overlays, keep the rest of the screen untouched
   if (tab !== 'hole' || !S || !$('#live')) return;
-  $('#live').innerHTML = liveHtml(); $('#liveTop').innerHTML = liveHtml('top'); drawMap(); renderBanner(); pushNativeState();
+  $('#live').innerHTML = liveHtml(); $('#liveTop').innerHTML = liveHtml('top'); renderBanner(); pushNativeState();
+  // the map only redraws when you've moved ~3 yd (or every 15 s): saves battery over a round
+  const p = posFor(viewHole), now = Date.now();
+  if (!lastDraw.p || lastDraw.h !== viewHole || yds(p, lastDraw.p) > 3 || now - lastDraw.t > 15000) { drawMap(); lastDraw = {t: now, p, h: viewHole}; }
 }
+let lastDraw = {t: 0, p: null, h: null};
 function renderHole() {
   if (!S) { renderSetup(); return; }
   const n = viewHole, h = H(n), st = hs(n);
@@ -817,7 +872,7 @@ function previewCourse() {
 }
 function endRound() {
   if (!confirm('Finish this round? It stays saved on this phone — you can reopen it from the round list.')) return;
-  S.ended = S.ended || Date.now(); save(); S = null; try { localStorage.removeItem(LS_KEY); } catch (e) {} tab = 'hole'; render();
+  S.ended = S.ended || Date.now(); save(); endLive(); S = null; try { localStorage.removeItem(LS_KEY); } catch (e) {} tab = 'hole'; render();
 }
 
 let cardSel = {tee: null, hole: null};
@@ -935,6 +990,7 @@ function renderInfo() {
     <table style="margin-top:6px"><tr><th class="l">Tee</th><th>Yards</th><th>Rating / Slope</th></tr>${TEES.map(t => `<tr><td class="l">${t}</td><td>${cr.holes.reduce((a, h) => a + h.yds[t], 0)}</td><td>${esc(cr.rating[t] || '')}</td></tr>`).join('')}</table>
     <div class="small" style="margin-top:6px"><a style="color:var(--acc)" href="tel:+19724563200">📞 Pro shop 972-456-3200</a> · 3500 Bear Creek Ct, DFW Airport, TX<br>
     <a style="color:var(--acc)" target="_blank" href="https://arcisgolf.com/clubs/bear-creek-golf-club/golf-course">Club website</a> · <a style="color:var(--acc)" target="_blank" href="https://bearcreektxpp.ezlinksgolf.com/index.html#/preSearch">Tee times</a></div></div>
+  <div class="card"><b>Offline maps</b> <span class="small mut">Save the satellite map on this phone so holes load instantly and work with no signal.</span><div class="row" style="margin-top:6px"><button class="sm" onclick="downloadOffline()">⬇️ Save maps offline</button><span class="small mut" id="offStat">${offlineStatus()}</span></div></div>
   <div class="card row">${S ? `<button onclick="endRound()" style="background:#5a2620">Finish / new round</button>` : ''}<button onclick="requestWake();alert(wakeLock?'Screen will stay on':'Screen-on not supported here')">☀️ Keep screen on</button></div>
   <div class="card"><b>Favorite layup distance</b><div class="small mut">Used for the "lay up to leave ___" number.</div><div class="row" style="margin-top:6px">${[60, 80, 100, 120, 140].map(v => `<button class="${(pref.layup || 100) === v ? 'on' : ''}" onclick="pref.layup=${v};savePref();render()">${v}</button>`).join('')}</div></div>
   <div class="card small mut">Map: Esri World Imagery · Hole/green/bunker shapes © OpenStreetMap contributors · Elevation: USGS 3DEP lidar (5 m grid) · Weather: Open-Meteo · Scorecard: GolfPass · Rating/slope: 18Birdies (men's; W = women's). Hole shapes are community-mapped; if a green looks off, drop the pin by tapping it.</div>`;
@@ -950,7 +1006,7 @@ async function forceUpdate() {
   const b = $('#updBtn'); if (b) b.textContent = '⏳';
   try { save(); } catch (e) {}
   try { await Promise.all(['./', 'index.html', 'app.js', 'course.json', 'sw.js', 'manifest.json'].map(f => fetch(f, {cache: 'reload'}).catch(() => {}))); } catch (e) {}
-  try { if ('caches' in window) { for (const k of await caches.keys()) await caches.delete(k); } } catch (e) {}
+  try { if ('caches' in window) { for (const k of await caches.keys()) if (/^bcgps-v/.test(k)) await caches.delete(k); } } catch (e) {}
   try { if (navigator.serviceWorker) { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } } catch (e) {}
   location.replace(location.pathname + '?u=' + Date.now());
 }
@@ -959,7 +1015,7 @@ async function forceUpdate() {
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
 (async function boot() {
   $('#main').innerHTML = '<div class="card">Loading course…</div>';
-  try { C = await (await fetch('course.json')).json(); } catch (e) { $('#main').innerHTML = '<div class="card">Could not load course data. Check your connection and reload.</div>'; return; }
+  try { C = await (await cachedFetch('course.json', 4000)).json(); } catch (e) { $('#main').innerHTML = '<div class="card">Could not load course data. Check your connection and reload.</div>'; return; }
   loadDEM();
   let cur = null; try { cur = localStorage.getItem(LS_KEY); } catch (e) {}
   if (cur && cur[0] === '{') { try { const old = JSON.parse(cur); if (old && old.order && !old.preview) { old.id = old.id || 'r' + (old.started || Date.now()); old.name = old.name || 'Round ' + new Date(old.started || Date.now()).toLocaleDateString(); S = old; save(); } } catch (e) {} cur = S ? S.id : null; }
