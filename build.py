@@ -33,6 +33,12 @@ holes = [e for e in els if e['tags'].get('golf') == 'hole']
 greens = [P(e) for e in els if e['tags'].get('golf') == 'green']
 tees = [P(e, 6) for e in els if e['tags'].get('golf') == 'tee']
 bunkers = [P(e) for e in els if e['tags'].get('golf') == 'bunker']
+# Bunkers visible in Esri World Imagery but missing from OpenStreetMap (hazard audit, Nov 2026):
+EXTRA_BUNKERS = [
+    # East 18, left of the green (~127 m2), traced from satellite imagery
+    [[32.86191, -97.056803], [32.86191, -97.056777], [32.861896, -97.05676], [32.861883, -97.05675], [32.861865, -97.056739], [32.861833, -97.056739], [32.861819, -97.056755], [32.861797, -97.056862], [32.861797, -97.056868], [32.861801, -97.056879], [32.861806, -97.056884], [32.861815, -97.056889], [32.861824, -97.056889], [32.861842, -97.056884], [32.861869, -97.056868], [32.861887, -97.056852], [32.861892, -97.056846]],
+]
+bunkers += EXTRA_BUNKERS
 water = [P(e, 6) for e in els if e['tags'].get('golf') in ('water_hazard', 'lateral_water_hazard') or e['tags'].get('natural') == 'water']
 fairways = [P(e, 5) for e in els if e['tags'].get('golf') == 'fairway']
 
