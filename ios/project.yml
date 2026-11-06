@@ -110,5 +110,5 @@ targets:
         com.apple.security.application-groups: [group.com.travisgafford.bearcreekgps]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.travisgafford.bearcreekgps.watchkitapp.complication
+        PRODUCT_BUNDLE_IDENTIFIER: com.travisgafford.bearcreekgps.watchkitapp.yards
         SKIP_INSTALL: YES
