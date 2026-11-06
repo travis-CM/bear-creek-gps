@@ -14,30 +14,30 @@ struct YardsLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: YardsAttributes.self) { ctx in
             let s = ctx.state
-            VStack(spacing: 2) {
+            VStack(spacing: 0) {
                 HStack {
-                    Text("HOLE \(s.hole)  ·  PAR \(s.par)").font(.system(size: 20, weight: .heavy)).foregroundStyle(.secondary)
+                    Text("HOLE \(s.hole)  ·  PAR \(s.par)").font(.system(size: 15, weight: .heavy)).foregroundStyle(.secondary)
                     Spacer()
-                    Text("plays \(s.plays)").font(.system(size: 30, weight: .heavy, design: .rounded)).foregroundStyle(orange)
+                    Text("plays \(s.plays)").font(.system(size: 22, weight: .heavy, design: .rounded)).foregroundStyle(orange)
                 }
-                Text("\(s.mid)").font(.system(size: 104, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+                Text("\(s.mid)").font(.system(size: 56, weight: .heavy, design: .rounded)).foregroundStyle(.white)
                     .minimumScaleFactor(0.6).lineLimit(1).frame(maxWidth: .infinity)
                 HStack {
-                    Text("FRONT \(s.front)").font(.system(size: 24, weight: .bold)).foregroundStyle(.white)
+                    Text("FRONT \(s.front)").font(.system(size: 17, weight: .bold)).foregroundStyle(.white)
                     Spacer()
-                    Text("BACK \(s.back)").font(.system(size: 24, weight: .bold)).foregroundStyle(.white)
+                    Text("BACK \(s.back)").font(.system(size: 17, weight: .bold)).foregroundStyle(.white)
                 }
                 HStack(spacing: 10) {
                     Button(intent: AddShotIntent()) {
-                        Text(s.shots > 0 ? "+ Shot (\(s.shots))" : "+ Shot").font(.system(size: 20, weight: .heavy)).frame(maxWidth: .infinity).padding(.vertical, 8)
+                        Text(s.shots > 0 ? "+ Shot (\(s.shots))" : "+ Shot").font(.system(size: 15, weight: .heavy)).frame(maxWidth: .infinity).padding(.vertical, 2)
                     }.tint(orange)
                     Button(intent: NextHoleIntent()) {
-                        Text("Next hole ▶").font(.system(size: 20, weight: .heavy)).frame(maxWidth: .infinity).padding(.vertical, 8)
+                        Text("Next hole ▶").font(.system(size: 15, weight: .heavy)).frame(maxWidth: .infinity).padding(.vertical, 2)
                     }.tint(.white)
                 }
-                .buttonStyle(.borderedProminent).foregroundStyle(.black).padding(.top, 6)
+                .buttonStyle(.borderedProminent).controlSize(.small).foregroundStyle(.black).padding(.top, 2)
             }
-            .padding(.horizontal, 20).padding(.vertical, 12)
+            .padding(.horizontal, 16).padding(.vertical, 8)
             .activityBackgroundTint(.black)
         } dynamicIsland: { ctx in
             let s = ctx.state
