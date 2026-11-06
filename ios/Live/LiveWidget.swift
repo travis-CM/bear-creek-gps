@@ -17,9 +17,9 @@ struct YardsLiveActivity: Widget {
                 HStack {
                     Text("HOLE \(s.hole)  ·  PAR \(s.par)").font(.system(size: 20, weight: .heavy)).foregroundStyle(.secondary)
                     Spacer()
-                    Text("plays \(s.plays)").font(.system(size: 30, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+                    Text("plays \(s.plays)").font(.system(size: 30, weight: .heavy, design: .rounded)).foregroundStyle(orange)
                 }
-                Text("\(s.mid)").font(.system(size: 104, weight: .heavy, design: .rounded)).foregroundStyle(orange)
+                Text("\(s.mid)").font(.system(size: 104, weight: .heavy, design: .rounded)).foregroundStyle(.white)
                     .minimumScaleFactor(0.6).lineLimit(1).frame(maxWidth: .infinity)
                 HStack {
                     Text("FRONT \(s.front)").font(.system(size: 24, weight: .bold)).foregroundStyle(.white)
