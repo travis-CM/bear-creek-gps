@@ -45,6 +45,13 @@ struct WatchView: View {
                             .buttonStyle(.plain).frame(width: 34, height: 28)
                     }
                     .id("top")
+                    if m.shotCount >= 0 {
+                        Button { m.logShot() } label: {
+                            Text(m.shotFlash ? "✓ Shot \(m.shotCount)" : "+ Shot (\(m.shotCount))")
+                                .font(.system(size: 18, weight: .heavy)).frame(maxWidth: .infinity).padding(.vertical, 6)
+                        }
+                        .tint(Color(red: 1.0, green: 0.60, blue: 0.0)).buttonStyle(.borderedProminent).foregroundStyle(.black)
+                    }
                     Text(m.pinSet ? "PIN" : "CENTER").font(.system(size: 15, weight: .heavy)).foregroundStyle(.secondary)
                     Text(yds(m.dist))
                         .font(.system(size: 92, weight: .heavy, design: .rounded))

@@ -4,6 +4,7 @@ import WatchConnectivity
 import HealthKit
 import CoreMotion
 import WidgetKit
+import WatchKit
 
 struct Hazard: Identifiable {
     let id: Int
@@ -382,6 +383,19 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         }.resume()
     }
 
+    // MARK: - One-tap shot
+    @Published var shotCount = -1      // -1 = no round running on the phone
+    @Published var shotFlash = false
+    func logShot() {
+        let msg: [String: Any] = ["cmd": "shot"]
+        if WCSession.default.isReachable { WCSession.default.sendMessage(msg, replyHandler: nil, errorHandler: nil) }
+        else { WCSession.default.transferUserInfo(msg) }
+        if shotCount >= 0 { shotCount += 1 }
+        WKInterfaceDevice.current().play(.success)
+        shotFlash = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { self.shotFlash = false }
+    }
+
     // MARK: - From the iPhone app
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         let ctx = session.receivedApplicationContext
@@ -402,6 +416,7 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
             for (k, v) in w { if let n = v as? NSNumber { wx[k] = n.doubleValue } }
             wxTime = Date()
         }
+        shotCount = (ctx["shots"] as? NSNumber)?.intValue ?? -1
         stream = (ctx["streamGPS"] as? NSNumber)?.boolValue ?? false
         updateLabel()
         recompute()

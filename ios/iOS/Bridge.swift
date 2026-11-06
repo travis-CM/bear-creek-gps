@@ -17,6 +17,7 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
     func start() {
         guard !started else { return }
         started = true
+        LiveCommands.handler = { [weak self] c in self?.command(c) }
         lm.delegate = self
         lm.desiredAccuracy = kCLLocationAccuracyBest
         lm.distanceFilter = kCLDistanceFilterNone
@@ -57,6 +58,10 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
         js("window.bcNative && window.bcNative.loc(\(lat),\(lon),\(acc),'\(src)')")
     }
 
+    func command(_ name: String) {
+        js("window.bcNative && window.bcNative.cmd('\(name)')")
+    }
+
     private func js(_ script: String) {
         DispatchQueue.main.async { self.webView?.evaluateJavaScript(script, completionHandler: nil) }
     }
@@ -93,7 +98,7 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
     private var activity: Activity<YardsAttributes>?
     private func updateActivity(_ b: [String: Any]) {
         func n(_ k: String) -> Int { (b[k] as? NSNumber)?.intValue ?? 0 }
-        let st = YardsAttributes.ContentState(hole: n("hole"), par: n("par"), mid: n("mid"), plays: n("plays"), front: n("front"), back: n("back"))
+        let st = YardsAttributes.ContentState(hole: n("hole"), par: n("par"), mid: n("mid"), plays: n("plays"), front: n("front"), back: n("back"), shots: n("shots"))
         DispatchQueue.main.async {
             guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
             let content = ActivityContent(state: st, staleDate: Date().addingTimeInterval(120))
@@ -139,7 +144,12 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
     func sessionDidDeactivate(_ session: WCSession) { session.activate() }
     func sessionWatchStateDidChange(_ session: WCSession) { DispatchQueue.main.async { self.announce() } }
 
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        if let c = userInfo["cmd"] as? String { DispatchQueue.main.async { self.command(c) } }
+    }
+
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        if let c = message["cmd"] as? String { DispatchQueue.main.async { self.command(c) }; return }
         guard let lat = (message["lat"] as? NSNumber)?.doubleValue,
               let lon = (message["lon"] as? NSNumber)?.doubleValue else { return }
         let acc = (message["acc"] as? NSNumber)?.doubleValue ?? 10

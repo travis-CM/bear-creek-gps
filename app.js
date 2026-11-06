@@ -268,13 +268,19 @@ function postNative(o) { if (NATIVE) try { window.webkit.messageHandlers.bcgps.p
 window.bcNative = {
   loc(lat, lon, acc, src) { gps = {p: [lat, lon], acc, ts: Date.now(), src}; gpsErr = ''; trackHoleByGPS(); liveUpdate(); },
   setSource(s, paired) { gpsSrc = s; watchPaired = !!paired; liveUpdate(); },
-  err(msg) { gpsErr = msg; liveUpdate(); }
+  err(msg) { gpsErr = msg; liveUpdate(); },
+  cmd(name) { // one-tap actions from the Watch and the lock screen
+    if (!S || !S.started || S.ended) return;
+    if (name === 'shot') quickShot();
+    else if (name === 'next') advanceFrom(S.cur);
+    else if (name === 'undo') { const st = hs(S.cur); const i = st.shots.length - 1; if (i >= 0) { st.shots.pop(); save(); render(); } }
+  }
 };
 function setGpsSource(s) { gpsSrc = s; postNative({type: 'source', value: s}); liveUpdate(); }
 function pushNativeState() { // tell the iPhone app (and through it the Watch) which hole, pin and weather to use
   if (!NATIVE || !C) return;
   const n = viewHole, p = pinOf(n), c = wx && wx.current;
-  const st = {type: 'state', course: course(), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]], pinSet: !!(S && S.holes[n] && S.holes[n].pin)};
+  const st = {type: 'state', course: course(), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]], pinSet: !!(S && S.holes[n] && S.holes[n].pin), shots: S && S.started && !S.ended && S.holes[S.cur] ? counted(S.holes[S.cur]) : -1, cur: S && S.started && !S.ended ? S.cur : 0};
   if (c) st.wx = {t: c.temperature_2m, rh: c.relative_humidity_2m, p: c.surface_pressure, ws: c.wind_speed_10m, wd: c.wind_direction_10m};
   const k = JSON.stringify(st); if (k !== lastNativeState) { lastNativeState = k; postNative(st); }
   try { // yardages for the lock-screen Live Activity (only while a round is on)
@@ -283,7 +289,7 @@ function pushNativeState() { // tell the iPhone app (and through it the Watch) w
     const f = inside(from, h.green) ? 0 : hits.length >= 2 ? hits[0] * YD : polyNear(from, h.green) * YD;
     const b = inside(from, h.green) ? polyFar(from, h.green) * YD : hits.length >= 2 ? hits[hits.length - 1] * YD : polyFar(from, h.green) * YD;
     const pl = playsLike(from, pin), ex = pl.total - pl.d;
-    const lv = {type: 'live', hole: n, par: h.par, mid: Math.round(pl.d), plays: Math.round(pl.total), front: Math.round(f), back: Math.round(b), fPl: Math.round(f + ex), bPl: Math.round(b + ex)};
+    const lv = {type: 'live', hole: n, par: h.par, mid: Math.round(pl.d), plays: Math.round(pl.total), front: Math.round(f), back: Math.round(b), fPl: Math.round(f + ex), bPl: Math.round(b + ex), shots: S.holes[n] ? counted(S.holes[n]) : 0};
     const lk = JSON.stringify(lv); if (lk !== lastLive) { lastLive = lk; postNative(lv); }
   } catch (e) {}
 }
@@ -320,7 +326,9 @@ function trackHoleByGPS() {
     if (prev && S.holes[prev] && !S.holes[prev].gpsOut) S.holes[prev].gpsOut = gpsCand.ts;
     const st = hs(n); if (!st.gpsIn) st.gpsIn = gpsCand.ts;
     S.gpsHole = n; save();
+    if (pref.autoAdv !== false && prev && S.order.indexOf(n) === S.order.indexOf(prev) + 1 && S.cur === prev && !hs(prev).done) advanceFrom(prev);
   }
+  if (pendingScore && !$('#modal').innerHTML) scorePrompt(pendingScore);
 }
 function hs(n) { return S.holes[n] || (S.holes[n] = {shots: [], adj: null, done: false}); }
 function fmtDur(ms) { if (ms == null || ms < 0) return '—'; const m = Math.floor(ms / 60e3), h = Math.floor(m / 60); return h ? `${h}:${String(m % 60).padStart(2, '0')}` : `${m}m`; }
@@ -426,6 +434,39 @@ function completeHole() {
   save(); render(); fitHole(true);
 }
 
+/* ---------------- auto-advance + quick score prompt ---------------- */
+let pendingScore = null;
+function advanceFrom(prev) { // move to the next hole, then ask for the score of the one just played
+  if (!S || S.ended || S.preview) return;
+  const i = S.order.indexOf(prev); if (i < 0 || i >= S.order.length - 1) return;
+  const nx = S.order[i + 1], wasViewing = viewHole === prev;
+  S.cur = nx; if (wasViewing) { viewHole = nx; target = null; }
+  const ns = hs(nx); if (!ns.startTs) ns.startTs = Date.now();
+  if (!hs(prev).done) pendingScore = prev;
+  save(); render(); if (wasViewing) fitHole(true);
+  if (pendingScore && !$('#modal').innerHTML) scorePrompt(pendingScore);
+}
+function scorePrompt(n) {
+  pendingScore = null; const st = hs(n), h = H(n), c = counted(st), cur = rel(n);
+  const guess = c || (cur != null ? h.par + cur : h.par);
+  const lbl = r => r <= -2 ? 'Eagle' : r === -1 ? 'Birdie' : r === 0 ? 'Par' : r === 1 ? 'Bogey' : r === 2 ? 'Double' : '+' + r;
+  const opts = []; for (let k = Math.max(1, h.par - 2); k <= h.par + 3; k++) opts.push(k);
+  modal(`<h3 style="margin:0 0 4px">Hole ${n} — what was your score?</h3>
+    <div class="small mut">Par ${h.par}${c ? ' · ' + c + ' shot' + (c > 1 ? 's' : '') + ' logged' : ''}</div>
+    <div class="row" style="flex-wrap:wrap;margin:10px 0">${opts.map(k => `<button class="${k === guess ? 'pri' : ''}" style="flex:1 0 28%;padding:14px 4px;font-size:22px;font-weight:800" onclick="setHoleScore(${n},${k})">${k}<div style="font-size:11px;font-weight:600;opacity:.8">${lbl(k - h.par)}</div></button>`).join('')}</div>
+    <div class="row"><button onclick="closeModal()">Later</button><button onclick="goBackTo(${n})">↩ Still on ${n}</button></div>`);
+}
+function setHoleScore(n, k) {
+  const st = hs(n), h = H(n);
+  if (k === counted(st)) st.manual = false; else { st.adj = k - h.par; st.manual = true; }
+  st.done = true; if (!st.endTs) st.endTs = Date.now(); if (!st.startTs) st.startTs = S.started;
+  save(); closeModal(); render();
+}
+function goBackTo(n) { // advanced by mistake
+  S.cur = n; viewHole = n; target = null; S.gpsHole = n; pendingScore = null; save(); closeModal(); render(); fitHole(true);
+}
+function quickShot() { if (S && S.started && !S.ended && !S.preview) logShot(S.cur, null); }
+
 /* ---------------- dictation ---------------- */
 const NUMW = {one: 1, two: 2, three: 3, four: 4, five: 5, a: 1, single: 1};
 function parseDictation(text, n) {
@@ -457,7 +498,9 @@ function parseDictation(text, n) {
   }
   return out;
 }
+let dictTimer = null;
 function startDictation() {
+  clearInterval(dictTimer);
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   openDictateSheet('');
   if (!SR) { $('#dictStatus').textContent = 'Voice not supported in this browser — tap the text box and use your keyboard mic 🎤.'; return; }
@@ -466,7 +509,9 @@ function startDictation() {
     $('#dictStatus').textContent = '🎙 Listening… e.g. "Drew drive, Chris approach, Travis two putts"';
     r.onresult = e => { let t = ''; for (const res of e.results) t += res[0].transcript; $('#dictTxt').value = t; previewDictation(); };
     r.onerror = e => { $('#dictStatus').textContent = 'Mic error (' + e.error + ') — type or use keyboard mic instead.'; };
-    r.onend = () => { const s = $('#dictStatus'); if (s && /Listening/.test(s.textContent)) s.textContent = 'Done — check the preview, then Add.'; };
+    r.onend = () => { const s = $('#dictStatus'); if (!s) return;
+      if (parseDictation($('#dictTxt').value, viewHole).length) { let k = 3; s.textContent = 'Adding in 3… (tap the box to edit)'; dictTimer = setInterval(() => { const q = $('#dictStatus'); if (!q) { clearInterval(dictTimer); return; } if (--k <= 0) { clearInterval(dictTimer); applyDictation(); } else q.textContent = 'Adding in ' + k + '… (tap the box to edit)'; }, 1000); }
+      else if (/Listening/.test(s.textContent)) s.textContent = 'Didn\'t catch a shot — try again or type it.'; };
     r.start();
   } catch (e) { $('#dictStatus').textContent = 'Mic unavailable — type or use keyboard mic.'; }
 }
@@ -484,9 +529,10 @@ function openDictateSheet(txt) {
     <textarea id="dictTxt" rows="3" placeholder="Drew drive, Chris approach, Travis chip, Mike made the putt">${esc(txt)}</textarea>
     <div id="dictPrev" style="margin:8px 0"></div>
     <div class="row"><button onclick="closeModal()">Cancel</button><button onclick="startDictation()">🎙 Again</button><button class="pri" onclick="applyDictation()">Add</button></div>`);
-  $('#dictTxt').addEventListener('input', previewDictation); previewDictation();
+  $('#dictTxt').addEventListener('input', () => { clearInterval(dictTimer); previewDictation(); }); previewDictation();
 }
 function applyDictation() {
+  clearInterval(dictTimer);
   const items = parseDictation($('#dictTxt').value, viewHole);
   items.forEach(it => logShot(viewHole, it.p, it.t, it.g));
   closeModal();
@@ -990,6 +1036,7 @@ function renderInfo() {
     <table style="margin-top:6px"><tr><th class="l">Tee</th><th>Yards</th><th>Rating / Slope</th></tr>${TEES.map(t => `<tr><td class="l">${t}</td><td>${cr.holes.reduce((a, h) => a + h.yds[t], 0)}</td><td>${esc(cr.rating[t] || '')}</td></tr>`).join('')}</table>
     <div class="small" style="margin-top:6px"><a style="color:var(--acc)" href="tel:+19724563200">📞 Pro shop 972-456-3200</a> · 3500 Bear Creek Ct, DFW Airport, TX<br>
     <a style="color:var(--acc)" target="_blank" href="https://arcisgolf.com/clubs/bear-creek-golf-club/golf-course">Club website</a> · <a style="color:var(--acc)" target="_blank" href="https://bearcreektxpp.ezlinksgolf.com/index.html#/preSearch">Tee times</a></div></div>
+  <div class="card"><b>Auto-advance holes</b> <span class="small mut">When you walk to the next tee, move to that hole and ask for the score of the one you just finished.</span><div class="row" style="margin-top:6px"><button class="${pref.autoAdv !== false ? 'on' : ''}" onclick="pref.autoAdv=pref.autoAdv===false;savePref();render()">${pref.autoAdv !== false ? '✅ On' : 'Off'}</button></div></div>
   <div class="card"><b>Offline maps</b> <span class="small mut">Save the satellite map on this phone so holes load instantly and work with no signal.</span><div class="row" style="margin-top:6px"><button class="sm" onclick="downloadOffline()">⬇️ Save maps offline</button><span class="small mut" id="offStat">${offlineStatus()}</span></div></div>
   <div class="card row">${S ? `<button onclick="endRound()" style="background:#5a2620">Finish / new round</button>` : ''}<button onclick="requestWake();alert(wakeLock?'Screen will stay on':'Screen-on not supported here')">☀️ Keep screen on</button></div>
   <div class="card"><b>Favorite layup distance</b><div class="small mut">Used for the "lay up to leave ___" number.</div><div class="row" style="margin-top:6px">${[60, 80, 100, 120, 140].map(v => `<button class="${(pref.layup || 100) === v ? 'on' : ''}" onclick="pref.layup=${v};savePref();render()">${v}</button>`).join('')}</div></div>
