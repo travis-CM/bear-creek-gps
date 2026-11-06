@@ -36,7 +36,7 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
             manager.showsBackgroundLocationIndicator = true
             manager.startUpdatingLocation()
         case .denied, .restricted:
-            js("window.bcNative && window.bcNative.err('Location is off for Bear Creek GPS. Turn it on in Settings.')")
+            js("window.bcNative && window.bcNative.err('Location is off for GolfHub. Turn it on in Settings.')")
         default:
             break
         }

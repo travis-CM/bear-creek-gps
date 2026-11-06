@@ -1,4 +1,4 @@
-# Bear Creek GPS
+# GolfHub (Bear Creek GPS)
 
 Personal golf GPS and scramble scorer for Bear Creek Golf Club (East and West courses), DFW Airport, TX.
 

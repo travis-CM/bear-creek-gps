@@ -2,11 +2,19 @@
 import json, shutil
 from PIL import Image, ImageDraw
 def icon(path):
-    im = Image.new('RGB', (1024, 1024), (15, 42, 29)); d = ImageDraw.Draw(im)
-    d.ellipse((262, 560, 762, 860), fill=(76, 194, 122))
-    d.rectangle((452, 150, 482, 720), fill=(255, 255, 255))
-    d.polygon([(482, 160), (790, 260), (482, 360)], fill=(239, 106, 90))
-    im.save(path)
+    from PIL import ImageFilter
+    S = 2; N = 1024 * S
+    im = Image.new('RGB', (N, N), (8, 8, 8))
+    g = Image.new('L', (N, N), 0); ImageDraw.Draw(g).ellipse((N*0.1, N*0.05, N*0.9, N*0.85), fill=255); g = g.filter(ImageFilter.GaussianBlur(N*0.12))
+    im = Image.composite(Image.new('RGB', (N, N), (40, 30, 18)), im, g); d = ImageDraw.Draw(im)
+    cx, cy, R, W = 512*S, 540*S, 300*S, 112*S
+    d.arc((cx-R, cy-R, cx+R, cy+R), 30, 330, fill=(255, 255, 255), width=W)
+    d.rectangle((cx+20*S, cy-W//2+6*S, cx+R+W//2-4*S, cy+W//2-6*S), fill=(255, 255, 255))
+    p = cx-75*S
+    d.rectangle((p-9*S, cy-150*S, p+9*S, cy+150*S), fill=(255, 255, 255))
+    d.polygon([(p+9*S, cy-150*S), (p+150*S, cy-100*S), (p+9*S, cy-50*S)], fill=(255, 153, 0))
+    d.ellipse((p-85*S, cy+128*S, p+85*S, cy+180*S), fill=(255, 153, 0))
+    im.resize((1024, 1024), Image.LANCZOS).save(path)
 for p in ['ios/iOS/Assets.xcassets/AppIcon.appiconset/icon.png', 'ios/Watch/Assets.xcassets/AppIcon.appiconset/icon.png']:
     icon(p)
 c = json.load(open('course.json'))

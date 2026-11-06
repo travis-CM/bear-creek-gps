@@ -20,7 +20,7 @@ targets:
     info:
       path: iOS/Info.plist
       properties:
-        CFBundleDisplayName: Bear Creek GPS
+        CFBundleDisplayName: GolfHub
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
         UILaunchScreen: {}
@@ -28,8 +28,8 @@ targets:
         UIBackgroundModes: [location]
         UIStatusBarStyle: UIStatusBarStyleLightContent
         UIViewControllerBasedStatusBarAppearance: false
-        NSLocationWhenInUseUsageDescription: Bear Creek GPS uses your location for live yardages on the course.
-        NSLocationAlwaysAndWhenInUseUsageDescription: Bear Creek GPS keeps yardages and shot tracking running while your phone is in your pocket.
+        NSLocationWhenInUseUsageDescription: GolfHub uses your location for live yardages on the course.
+        NSLocationAlwaysAndWhenInUseUsageDescription: GolfHub keeps yardages and shot tracking running while your phone is in your pocket.
         NSCameraUsageDescription: Take a photo of the pin sheet.
         NSPhotoLibraryUsageDescription: Choose a photo of the pin sheet.
         NSMicrophoneUsageDescription: Dictate who hit each shot.
@@ -50,13 +50,13 @@ targets:
     info:
       path: Watch/Info.plist
       properties:
-        CFBundleDisplayName: Bear Creek
+        CFBundleDisplayName: GolfHub
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.travisgafford.bearcreekgps
         NSLocationWhenInUseUsageDescription: Live yardages from your watch on the course.
-        NSHealthShareUsageDescription: Bear Creek GPS runs your round as a golf workout so the app and GPS stay live.
+        NSHealthShareUsageDescription: GolfHub runs your round as a golf workout so the app and GPS stay live.
         NSHealthUpdateUsageDescription: Saves your round as a golf workout in Fitness.
         WKBackgroundModes: [workout-processing]
     entitlements:
