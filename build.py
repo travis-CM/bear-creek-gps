@@ -117,11 +117,11 @@ for cname in ('West', 'East'):
                 hz.append({'t': 'b', 'p': b})
         for w in water:
             if poly_d(w, l) < 45: hz.append({'t': 'w', 'p': w})
-        # creek corridors: runs of waterway vertices within 30 m of this hole's line that no mapped water polygon already covers
+        # creek corridors: runs of waterway vertices within 45 m of this hole's line that no mapped water polygon already covers
         for wl in waterlines:
             run = []
             for pt in wl + [None]:
-                if pt is not None and line_d(pt, l) < 30 and not covered_by_water(pt): run.append(pt); continue
+                if pt is not None and line_d(pt, l) < 45 and not covered_by_water(pt): run.append(pt); continue
                 if len(run) >= 3: hz.append({'t': 'w', 'p': corridor(run), 'creek': 1})
                 run = []
         fw = [f for f in fairways if poly_d(f, l) < 15]
