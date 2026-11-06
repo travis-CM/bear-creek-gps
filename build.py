@@ -83,6 +83,7 @@ def corridor(run, hw=3.5):
 WATERWAYS = ('stream', 'river', 'canal', 'drain', 'ditch')
 waterlines = [densify(P(e)) for e in els if e['tags'].get('waterway') in WATERWAYS and not e['tags'].get('tunnel') and not e['tags'].get('culvert') and 'geometry' in e]
 print('waterway lines', len(waterlines), file=sys.stderr)
+wl_types = [e['tags'].get('waterway') for e in els if e['tags'].get('waterway') in WATERWAYS and not e['tags'].get('tunnel') and not e['tags'].get('culvert') and 'geometry' in e]
 def covered_by_water(pt):
     return any(inside(pt, w) or min(dist(pt, q) for q in w) < 6 for w in water)
 
@@ -118,16 +119,23 @@ for cname in ('West', 'East'):
         for w in water:
             if poly_d(w, l) < 45: hz.append({'t': 'w', 'p': w})
         # creek corridors: runs of waterway vertices within 55 m of this hole's line that no mapped water polygon already covers
-        for wl in waterlines:
-            run = []
+        cr_full = []
+        for wi, wl in enumerate(waterlines):
+            run = []; touched = any(line_d(pt, l) < 55 for pt in wl)  # creek is a hazard on this hole
             for pt in wl + [None]:
                 if pt is not None and line_d(pt, l) < 55 and not covered_by_water(pt): run.append(pt); continue
                 if len(run) >= 3: hz.append({'t': 'w', 'p': corridor(run), 'creek': 1})
                 run = []
+            if touched:  # draw only the stretch that fills this hole's map view (~220 m around the hole), not the whole creek
+                run = []; hw = 6.0 if wl_types[wi] == 'river' else 3.5
+                for pt in wl + [None]:
+                    if pt is not None and line_d(pt, l) < 220: run.append(pt); continue
+                    if len(run) >= 2: cr_full.append(corridor(run, hw))
+                    run = []
         fw = [f for f in fairways if poly_d(f, l) < 15]
         arr.append({'n': r, 'par': SC[cname]['par'][r-1], 'hcp': SC[cname]['hcp'][r-1],
                     'yds': {t: SC[cname]['tees'][t][r-1] for t in SC[cname]['tees']},
-                    'line': l, 'green': g, 'tees': tb, 'hz': hz, 'fw': fw,
+                    'line': l, 'green': g, 'tees': tb, 'hz': hz, 'fw': fw, 'cr': cr_full,
                     'note': SC[cname]['notes'].get(r, ''),
                     'osmPar': int(h['tags'].get('par', 0))})
         if arr[-1]['osmPar'] != arr[-1]['par']: print('PAR MISMATCH', cname, r, file=sys.stderr)
@@ -142,22 +150,6 @@ im=Image.fromarray(a).resize((W,W),Image.BILINEAR)
 b=np.array(im,dtype=np.float32)
 cm=np.clip(np.round((b-130.0)*100),0,65535).astype('<u2')
 cm.tofile('dem.bin')
-# whole creek/river network inside the course box, drawn on every hole map (display only, not in the hazard lists)
-CB = (32.845, 32.875, -97.075, -97.040)
-def inbox(pt):
-    return CB[0] <= pt[0] <= CB[1] and CB[2] <= pt[1] <= CB[3]
-creeks = []
-for e in els:
-    t = e['tags']
-    if t.get('waterway') in ('stream', 'river', 'canal', 'drain', 'ditch') and not t.get('tunnel') and not t.get('culvert') and 'geometry' in e:
-        wl = densify(P(e)); run = []
-        hw = 6.0 if t.get('waterway') == 'river' else 3.5
-        for pt in wl + [None]:
-            if pt is not None and inbox(pt): run.append(pt); continue
-            if len(run) >= 2: creeks.append(corridor(run, hw))
-            run = []
-out['creeks'] = creeks
-print('creek polygons', len(creeks), file=sys.stderr)
 out['dem']={'n':32.875,'s':32.845,'w':-97.075,'e':-97.040,'cols':W,'rows':W,'base':130.0,'scale':0.01,'units':'m'}
 print('dem', b.min(), b.max(), file=sys.stderr)
 
