@@ -104,10 +104,6 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    entitlements:
-      path: WatchWidget/Complication.entitlements
-      properties:
-        com.apple.security.application-groups: [group.com.travisgafford.bearcreekgps]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.travisgafford.bearcreekgps.watchkitapp.yards
