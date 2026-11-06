@@ -3,6 +3,7 @@ import CoreLocation
 import WatchConnectivity
 import HealthKit
 import CoreMotion
+import WidgetKit
 
 struct Hazard: Identifiable {
     let id: Int
@@ -316,6 +317,16 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
             front = playsLike(from, fb.0)
             back = playsLike(from, fb.1)
         } else { front = nil; back = nil }
+        shareToComplication()
+    }
+
+    private var lastShare = Date.distantPast
+    private func shareToComplication() {
+        guard let d = WatchShare.defaults, let m = dist else { return }
+        d.set(hole, forKey: "hole"); d.set(Int(m.rounded()), forKey: "mid")
+        d.set(Int((front?.0 ?? 0).rounded()), forKey: "front"); d.set(Int((back?.0 ?? 0).rounded()), forKey: "back")
+        d.set(Date().timeIntervalSince1970, forKey: "ts")
+        if Date().timeIntervalSince(lastShare) > 20 { lastShare = Date(); WidgetCenter.shared.reloadAllTimelines() }
     }
 
     /// front / back edge of the green along your line to the pin

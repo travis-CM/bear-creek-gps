@@ -269,7 +269,16 @@ function pushNativeState() { // tell the iPhone app (and through it the Watch) w
   const st = {type: 'state', course: course(), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]], pinSet: !!(S && S.holes[n] && S.holes[n].pin)};
   if (c) st.wx = {t: c.temperature_2m, rh: c.relative_humidity_2m, p: c.surface_pressure, ws: c.wind_speed_10m, wd: c.wind_direction_10m};
   const k = JSON.stringify(st); if (k !== lastNativeState) { lastNativeState = k; postNative(st); }
+  try { // yardages for the lock-screen Live Activity
+    const h = H(n), from = posFor(n), pin = p, hits = rayHits(from, pin, h.green);
+    const f = inside(from, h.green) ? 0 : hits.length >= 2 ? hits[0] * YD : polyNear(from, h.green) * YD;
+    const b = inside(from, h.green) ? polyFar(from, h.green) * YD : hits.length >= 2 ? hits[hits.length - 1] * YD : polyFar(from, h.green) * YD;
+    const pl = playsLike(from, pin), ex = pl.total - pl.d;
+    const lv = {type: 'live', hole: n, par: h.par, mid: Math.round(pl.d), plays: Math.round(pl.total), front: Math.round(f), back: Math.round(b), fPl: Math.round(f + ex), bPl: Math.round(b + ex)};
+    const lk = JSON.stringify(lv); if (lk !== lastLive) { lastLive = lk; postNative(lv); }
+  } catch (e) {}
 }
+let lastLive = '';
 function startGPS() {
   if (NATIVE) { postNative({type: 'ready'}); return; } // the iPhone app feeds GPS (phone or watch) through bcNative.loc
   if (!navigator.geolocation) { gpsErr = 'GPS not supported'; return; }

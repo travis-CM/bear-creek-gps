@@ -16,7 +16,7 @@ targets:
     type: application
     platform: iOS
     scheme: {}
-    sources: [iOS]
+    sources: [iOS, Shared]
     info:
       path: iOS/Info.plist
       properties:
@@ -26,6 +26,8 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIBackgroundModes: [location]
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
         UIStatusBarStyle: UIStatusBarStyleLightContent
         UIViewControllerBasedStatusBarAppearance: false
         NSLocationWhenInUseUsageDescription: GolfHub uses your location for live yardages on the course.
@@ -43,10 +45,11 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - target: BearCreekGPSWatch
+      - target: BearCreekLive
   BearCreekGPSWatch:
     type: application
     platform: watchOS
-    sources: [Watch]
+    sources: [Watch, Shared]
     info:
       path: Watch/Info.plist
       properties:
@@ -64,8 +67,48 @@ targets:
       properties:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.access: []
+        com.apple.security.application-groups: [group.com.travisgafford.bearcreekgps]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.travisgafford.bearcreekgps.watchkitapp
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SKIP_INSTALL: YES
+    dependencies:
+      - target: BearCreekComplication
+  BearCreekLive:
+    type: app-extension
+    platform: iOS
+    sources: [Live, Shared]
+    info:
+      path: Live/Info.plist
+      properties:
+        CFBundleDisplayName: GolfHub
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.travisgafford.bearcreekgps.live
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES
+  BearCreekComplication:
+    type: app-extension
+    platform: watchOS
+    sources: [WatchWidget, Shared]
+    info:
+      path: WatchWidget/Info.plist
+      properties:
+        CFBundleDisplayName: GolfHub
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: WatchWidget/Complication.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.travisgafford.bearcreekgps]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.travisgafford.bearcreekgps.watchkitapp.complication
         SKIP_INSTALL: YES

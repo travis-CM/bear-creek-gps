@@ -3,6 +3,7 @@ import CoreLocation
 import WatchConnectivity
 import WebKit
 import UIKit
+import ActivityKit
 
 /// Connects the web app (WKWebView) to native GPS (phone or Apple Watch) and the Watch app.
 final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSessionDelegate, WKScriptMessageHandler {
@@ -76,11 +77,30 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
             s.removeValue(forKey: "type")
             lastState = s
             pushWatch()
+        case "live":
+            updateActivity(body)
         case "ready":
             announce()
             pushWatch()
         default:
             break
+        }
+    }
+
+    // MARK: - Lock screen Live Activity
+    private var activity: Activity<YardsAttributes>?
+    private func updateActivity(_ b: [String: Any]) {
+        func n(_ k: String) -> Int { (b[k] as? NSNumber)?.intValue ?? 0 }
+        let st = YardsAttributes.ContentState(hole: n("hole"), par: n("par"), mid: n("mid"), plays: n("plays"), front: n("front"), back: n("back"))
+        DispatchQueue.main.async {
+            guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+            let content = ActivityContent(state: st, staleDate: Date().addingTimeInterval(120))
+            if let a = self.activity ?? Activity<YardsAttributes>.activities.first {
+                self.activity = a
+                Task { await a.update(content) }
+            } else if UIApplication.shared.applicationState == .active {
+                self.activity = try? Activity.request(attributes: YardsAttributes(name: "GolfHub"), content: content)
+            }
         }
     }
 
