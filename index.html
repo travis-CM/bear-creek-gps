@@ -11,7 +11,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-180.png">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="vendor/leaflet.css">
 <style>
 :root{--bg:#0a0a0a;--card:#161616;--card2:#242424;--fg:#ffffff;--mut:#a3a3a3;--acc:#ff9900;--acc2:#c76f00;--warn:#ffd166;--bad:#ff5a4d;--blue:#5aa9ef;--sand:#e9d39a;--line:#2e2e2e}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -25,9 +25,9 @@ button.on{background:var(--acc);color:#000;font-weight:700}
 input,select,textarea{font:inherit;color:var(--fg);background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:9px 10px;width:100%}
 label{display:block;color:var(--mut);font-size:13px;margin:10px 0 4px}
 header{display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 6px) 12px 6px;background:#000000;border-bottom:1px solid var(--line)}
-header img{height:30px;max-width:130px;object-fit:contain}
+header img{height:30px;max-width:110px;object-fit:contain}
 header .logoTxt{font-weight:800;letter-spacing:.5px}
-header .grow{flex:1;min-width:0}
+header .grow{flex:1;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
 header .clock{font-variant-numeric:tabular-nums;text-align:right;font-size:13px;color:var(--mut)}
 header .clock b{color:var(--fg);font-size:15px}
 main{flex:1;overflow:auto;-webkit-overflow-scrolling:touch}
@@ -121,8 +121,8 @@ tr:has(td.x1) td.x1:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 <div id="modal"></div>
 <input type="file" id="photoIn" accept="image/*" capture="environment" class="hide">
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/leaflet-rotate@0.2.8/dist/leaflet-rotate.js"></script>
-<script src="app.js?v=25"></script>
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/leaflet-rotate.js"></script>
+<script src="app.js?v=26"></script>
 </body>
 </html>

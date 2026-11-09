@@ -1,6 +1,7 @@
 name: iPhone + Watch app
 on:
   push:
+    branches: [main]   # feature branches never build or upload; merge to main does
     paths: ['bundle.json', '.github/workflows/ios.yml']
   workflow_dispatch:
 jobs:

@@ -4,7 +4,16 @@
 - 2026-11: Name "GolfHub" and the black/orange/white logo are for testing only. Why: a joke for testing buddies; change before any App Store release.
 - 2026-11-06: Creek drawn only near the hole it affects (about 200 yd). Why: the whole waterway network cluttered the map.
 - 2026-11-06: Waterway data kept in the repo; the Overpass refresh is best-effort. Why: the refresh can fail.
-
+- 2026-11-09: Leaflet and leaflet-rotate are vendored in `vendor/`, not loaded from CDNs. Why: the first load on the course with no signal had no map library at all (the service worker only caches CDN files after one online visit), and the SW precache can now hold them.
+- 2026-11-09: `pack.py` rebuilds `bundle.json`; nothing else writes it. Why: bundle.json is what the workflows unpack over the tree, so an edited app.js that is not repacked is silently reverted by the next workflow run. `python3 pack.py --check` fails when the bundle is stale.
+- 2026-11-09: Branch work does not repack `bundle.json`; Travis repacks right before merging. Why: both workflows trigger on any branch when bundle.json changes, so a repack on a feature branch would upload an unreviewed TestFlight build.
+- 2026-11-09: Hazard reach / carry are measured along the line from you to the pin: reach is where that line enters the hazard (or the nearest point if it runs beside the line), carry is where the line leaves it (or the hazard's far end along the line). Carry is blank when the hazard runs past the pin. Why: the old carry was the farthest vertex in any direction, which read 597 yd for a lake beside West 4.
+- 2026-11-09: A hole with logged strokes counts in the total as soon as you advance from it, even before the score prompt is answered. Why: "Later" on the prompt used to drop the hole from the total while the card row still showed it.
+- 2026-11-09: GPS fixes with accuracy worse than 30 m never auto-advance the hole. Why: a cold-start or pocket fix of 80 m can latch the wrong hole and advance early.
+- 2026-11-09: The hole dwell (30 s near a hole before the round moves) restarts after an off-hole fix or a 60 s gap in fixes. Why: one old fix near hole 5 used to confirm the hole minutes later; 60 s rather than less because the phone's 3 m distance filter can pause fixes while you stand still.
+- 2026-11-09: West 14 yardages (Blue 144 shorter than Silver 161) stay as they are. Why: GolfPass, the card source, lists exactly those numbers; the oddity is in the published card.
+- 2026-11-09: Swift (iPhone / Watch) and workflow findings from the sweep are recorded, not fixed, in this branch. Why: no Xcode here to compile, and a workflow or bundle.json change on a branch starts a TestFlight build.
+- 2026-11-09: Both workflows trigger on `main` only (`branches: [main]`), still on bundle.json / workflow-file changes, plus manual dispatch. Why: a merge from main onto the review-sweep branch started a TestFlight build and reverted the branch's app files. Travis approved; the repack of bundle.json rode the same commit so the branch push itself started nothing.
 - Multi-club data: `course.json` has `clubs` (name, place, phone, courses, per-club DEM file) and each course has `club` and `tees`. Bear Creek stays `bc`, Trophy Club is `tcc`; old app versions still read top-level `dem`.
 - Trophy Club tee names Blue/Copper/White/Gold/Silver (the club site says Tee 1-5). Handicaps from GolfPass (the club site has none).
 - Holes OSM lacks are traced into `tcc_traced.json` (back tee -> dogleg -> green centre); tees are placed along that line by yardage.
