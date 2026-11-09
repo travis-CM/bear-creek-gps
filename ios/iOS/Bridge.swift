@@ -19,8 +19,7 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
         started = true
         LiveCommands.handler = { [weak self] c in self?.command(c) }
         lm.delegate = self
-        lm.desiredAccuracy = kCLLocationAccuracyBest
-        lm.distanceFilter = kCLDistanceFilterNone
+        applyGPSMode()
         lm.activityType = .fitness
         lm.pausesLocationUpdatesAutomatically = false
         lm.requestWhenInUseAuthorization()
@@ -31,6 +30,17 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
     }
 
     // MARK: - Location
+    /// Phone GPS at full power only when it is the chosen source; with the Watch as source the phone just idles as a fallback.
+    private func applyGPSMode() {
+        if source == "phone" {
+            lm.desiredAccuracy = kCLLocationAccuracyBest
+            lm.distanceFilter = 3
+        } else {
+            lm.desiredAccuracy = kCLLocationAccuracyHundredMeters
+            lm.distanceFilter = 50
+        }
+    }
+
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         switch manager.authorizationStatus {
         case .authorizedWhenInUse, .authorizedAlways:
@@ -74,6 +84,7 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
             if let v = body["value"] as? String {
                 source = v
                 UserDefaults.standard.set(v, forKey: "gpsSource")
+                applyGPSMode()
                 pushWatch()
                 announce()
             }

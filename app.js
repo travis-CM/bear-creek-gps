@@ -290,11 +290,11 @@ function pushNativeState() { // tell the iPhone app (and through it the Watch) w
     const b = inside(from, h.green) ? polyFar(from, h.green) * YD : hits.length >= 2 ? hits[hits.length - 1] * YD : polyFar(from, h.green) * YD;
     const pl = playsLike(from, pin), ex = pl.total - pl.d;
     const lv = {type: 'live', hole: n, par: h.par, mid: Math.round(pl.d), plays: Math.round(pl.total), front: Math.round(f), back: Math.round(b), fPl: Math.round(f + ex), bPl: Math.round(b + ex), shots: S.holes[n] ? counted(S.holes[n]) : 0};
-    const lk = JSON.stringify(lv); if (lk !== lastLive) { lastLive = lk; postNative(lv); }
+    const lk = JSON.stringify(lv), nowT = Date.now(); if (lk !== lastLive && nowT - lastLiveT > 4000) { lastLive = lk; lastLiveT = nowT; postNative(lv); } // at most one lock-screen update per 4 s
   } catch (e) {}
 }
-let lastLive = '';
-function endLive() { lastLive = ''; postNative({type: 'endlive'}); }
+let lastLive = '', lastLiveT = 0;
+function endLive() { lastLive = ''; lastLiveT = 0; postNative({type: 'endlive'}); }
 function startGPS() {
   if (NATIVE) { postNative({type: 'ready'}); return; } // the iPhone app feeds GPS (phone or watch) through bcNative.loc
   if (!navigator.geolocation) { gpsErr = 'GPS not supported'; return; }
@@ -816,6 +816,7 @@ function liveHtml(part) {
 `;
 }
 function liveUpdate() { // called on every GPS fix: refresh numbers + map overlays, keep the rest of the screen untouched
+  if (document.hidden) { if (S && NATIVE) pushNativeState(); return; } // screen locked / app backgrounded: skip all drawing, just feed the lock screen + Watch
   if (tab !== 'hole' || !S || !$('#live')) return;
   $('#live').innerHTML = liveHtml(); $('#liveTop').innerHTML = liveHtml('top'); renderBanner(); pushNativeState();
   // the map only redraws when you've moved ~3 yd (or every 15 s): saves battery over a round

@@ -3,9 +3,11 @@ import SwiftUI
 @main
 struct BearCreekWatchApp: App {
     @StateObject private var model = WatchModel()
+    @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
             WatchRoot().environmentObject(model)
+                .onChange(of: phase) { _, p in model.setActive(p == .active) }
         }
     }
 }
