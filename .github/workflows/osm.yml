@@ -1,6 +1,7 @@
 name: Build course app
 on:
   push:
+    branches: [main]   # feature branches never build or upload; merge to main does
     paths: ['bundle.json', '.github/workflows/osm.yml']
   workflow_dispatch:
 permissions:

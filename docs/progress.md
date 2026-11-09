@@ -6,7 +6,7 @@
 - 2026-11-09 (branch `claude/intelligent-lamport-kuo1n1`, not yet on main): full-codebase review sweep (13 reviewers) and the web-app fixes that came out of it. See the log entry.
 
 ## Next
-- Travis: review the PR from the sweep. Before merging, run `python3 pack.py` and commit `bundle.json` (that push starts TestFlight + the course rebuild). Merging without it leaves `bundle.json` stale, and the next unpack reverts app.js.
+- Travis: review and merge the PR from the sweep. `bundle.json` is already repacked on the branch; the merge to main starts the TestFlight build and the course rebuild (once).
 - Travis: decide on the Swift and workflow findings listed in `known-issues.md` (not changed here: no Xcode in the sandbox, and any workflow or `bundle.json` edit on a branch starts a TestFlight build).
 - Check the hazard card on the course: reach / carry are now measured along the line of play (see decisions). Carry shows "—" when a hazard runs past the pin.
 
