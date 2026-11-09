@@ -45,4 +45,4 @@
 - Top-level `let`/`const` in app.js (`C`, `S`, `gps`, `pref`, `gpsCand`…) are not `window` properties. In a Playwright harness test them by bare name (`typeof C !== 'undefined' && C`), not `window.C`.
 - `hazardsFrom(from, h)` takes the pin from the *current* course (`pinOf(h.n)`): checking an East hole while a West round is open gives nonsense. Set `S.course` first.
 - Line-number-based test harnesses (`L.slice(a, b)` on app.js) die on the first edit. Extract functions by name or run the real app in headless Chromium.
-- A scenario harness for the web app lives in the session scratchpad (`verify.js`, 31 checks); it is not in the repo yet (see reflect proposals, 2026-11-09).
+- The web-app scenario harness is `tests/verify.js` (31 checks, headless Chromium). Serve the repo on port 8766 first. It is not bundled, so the workflows never touch it.

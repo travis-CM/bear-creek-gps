@@ -6,7 +6,7 @@ Show all times in US Central. Keep replies short.
 
 ## How work runs here (orchestrator + workers)
 - You (the main session) are the orchestrator. You plan, write briefs and check results. You don't do bulk work yourself when a worker can do it.
-- Workers are subagents on Haiku: `.claude/agents/builder.md` and `.claude/agents/reviewer.md`. Every brief states the goal, the files to read, and a "Done when:" check that can be run or seen.
+- Workers are subagents on Haiku: `.claude/agents/builder.md` and `.claude/agents/reviewer.md`. Every brief states the goal, the files to read, and a "Done when:" check that can be run or seen. A check must survive edits: extract functions by name or run the real app in headless Chromium, never slice files by line number.
 - Before accepting any worker's output, run its check yourself. If it fails, send it back with the failure. Never pass on a worker's report unchecked.
 - Start of every session: read this file and `docs/progress.md`, `docs/decisions.md`, `docs/known-issues.md`. End of every session: update `progress.md`, add new decisions and gotchas, and run the `reflect` skill to propose skill edits with evidence from this session. Travis approves them before you apply them.
 - Confirm with Travis before pushing to `main` (it redeploys the web app, and a `bundle.json` change starts a TestFlight build).
@@ -16,7 +16,7 @@ Show all times in US Central. Keep replies short.
 - `course.json`, `osm.json`, `water.json`, `dem.bin` — course data (OSM shapes, waterways, USGS lidar elevation).
 - `build.py` — builds course data from `osm.json` / `water.json`.
 - `ios/` — native app source: `iOS/`, `Watch/`, `WatchWidget/`, `Live/` (Live Activity), `Shared/`, `project.yml` (XcodeGen).
-- `bundle.json` — packed app source the iOS workflow unpacks.
+- `bundle.json` — packed app source. Both workflows unpack it over the tree, so an edit to any bundled file (app.js, index.html, sw.js, build.py, README, ios/…) must be followed by `python3 pack.py` or the next run reverts it; `python3 pack.py --check` says when it is stale. Pushing it starts TestFlight on any branch, so repack on main only, with Travis's OK.
 - `.github/workflows/ios.yml` — builds and uploads to TestFlight when `bundle.json` changes. `osm.yml` — "Build course app" (course data + commit).
 - `docs/progress.md`, `docs/decisions.md`, `docs/known-issues.md` — where we are, what's settled, gotchas.
 - `.claude/agents/` — Haiku workers. `.claude/skills/` — one folder per repeatable task.
@@ -25,3 +25,4 @@ Show all times in US Central. Keep replies short.
 - The "GolfHub" name and black/orange/white logo are a joke for testing buddies; change them before any App Store release.
 - Credit data sources as the README does (OpenStreetMap, Esri, USGS 3DEP, Open-Meteo, GolfPass).
 - Never commit App Store Connect keys; they live in GitHub secrets.
+- Web-app check before any commit touching app.js, sw.js or index.html: serve the repo on port 8766, then `node tests/verify.js` (headless Chromium scenarios). Syntax checks alone are not enough.
