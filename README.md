@@ -10,4 +10,4 @@ Open: https://travis-cm.github.io/bear-creek-gps/
 - Scramble mode: 4 golfers, whose shot was used, gimmicks (mulligan, string, ...), voice dictation
 - Pin sheet photo + per-hole pin placement, pace of play, auto scorecard with ± override
 
-Data: hole/green/bunker shapes © OpenStreetMap contributors (refreshed by the "Fetch course map data" workflow), imagery Esri World Imagery, elevation USGS 3DEP, weather Open-Meteo, scorecard GolfPass.
+Data: hole/green/bunker shapes © OpenStreetMap contributors (refreshed by the "Build course app" workflow), imagery Esri World Imagery, elevation USGS 3DEP, weather Open-Meteo, scorecard GolfPass.

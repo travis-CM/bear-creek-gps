@@ -18,11 +18,15 @@ let manualMe = null;
 let wx = null, wxTs = 0, wxErr = '';
 let map = null, layers = null, mapHole = null;
 let wakeLock = null;
-let pref = load(LS_PREF) || {course: 'West', tee: 'Blue', mode: 'scramble', players: ['Travis', '', '', ''], start: 1};
+// saved prefs from an older version may lack newer fields (start, players): merge over the defaults, never replace them
+let pref = Object.assign({course: 'West', tee: 'Blue', mode: 'scramble', players: ['Travis', '', '', ''], start: 1}, load(LS_PREF) || {});
+if (!Array.isArray(pref.players) || pref.players.length < 4) pref.players = ['Travis', '', '', ''];
+if (!(pref.start >= 1 && pref.start <= 18)) pref.start = 1;
 
 function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
 const LS_ROUNDS = 'bcgps_rounds_v1';
 function rounds() { return load(LS_ROUNDS) || {}; }
+let saveErr = false; // true while localStorage refuses writes (full): the banner warns that scores are not being kept
 function save() { // called after every change (incl. each keystroke in name fields)
   if (!S || S.preview) return;
   try {
@@ -30,12 +34,21 @@ function save() { // called after every change (incl. each keystroke in name fie
     const r = rounds(); r[S.id] = S;
     localStorage.setItem(LS_ROUNDS, JSON.stringify(r));
     localStorage.setItem(LS_KEY, S.id);
-  } catch (e) {}
+    saveErr = false;
+  } catch (e) { saveErr = true; }
 }
 function defaultName() { const d = new Date(); return `${pref.mode === 'scramble' ? 'Scramble' : 'Round'} · ${pref.course} · ${d.toLocaleDateString([], {month: 'short', day: 'numeric'})}`; }
 function resumeRound(id) { const r = rounds()[id]; if (!r) return; S = r; viewHole = S.cur; tab = S.ended ? 'card' : 'hole'; save(); requestWake(); render(); fitHole(true); loadWx(true); }
 function deleteRound(id) { const r = rounds(); if (!r[id] || !confirm(`Delete "${r[id].name}" permanently?`)) return; delete r[id]; try { localStorage.setItem(LS_ROUNDS, JSON.stringify(r)); } catch (e) {} if (S && S.id === id) S = null; render(); }
-function roundSummary(r) { let rr = 0, thru = 0; r.order.forEach(n => { const st = r.holes[n]; if (!st) return; const h = C.courses[r.course].holes[n - 1]; const c = st.shots.filter(s => !s.g || s.g.counts).length; const v = st.adj != null ? st.adj : st.done ? (c ? c - h.par : 0) : null; if (v != null && (st.done || st.adj != null)) { rr += v; thru++; } }); return {rr, thru}; }
+function relOf(st, par) { // ± vs par for one hole; the single rule used by the hole screen, scorecard, totals, stats and the saved-round list
+  if (!st) return null;
+  const c = st.shots.filter(s => !s.g || s.g.counts).length;
+  if (st.manual && st.adj != null) return st.adj;      // ± override wins until shots change
+  if (c) return c - par;                               // live from logged strokes
+  if (st.adj != null) return st.adj;                   // ± used with no shots logged
+  return st.done ? 0 : null;
+}
+function roundSummary(r) { let rr = 0, thru = 0; (r.order || []).forEach(n => { const st = r.holes[n]; if (!st) return; const v = relOf(st, C.courses[r.course].holes[n - 1].par); if (v != null && (st.done || st.manual)) { rr += v; thru++; } }); return {rr, thru}; }
 function savePref() { try { localStorage.setItem(LS_PREF, JSON.stringify(pref)); } catch (e) {} }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])); }
 
@@ -84,7 +97,7 @@ function rayHits(o, t, poly) {
     const A = xy(poly[i], o), B = xy(poly[i + 1], o), e = [B[0] - A[0], B[1] - A[1]];
     const den = d[0] * e[1] - d[1] * e[0]; if (Math.abs(den) < 1e-9) continue;
     const s = (A[0] * e[1] - A[1] * e[0]) / den, u = (A[0] * d[1] - A[1] * d[0]) / den;
-    if (u >= 0 && u <= 1 && s > 0) hits.push(s);
+    if (u >= 0 && u <= 1 && s > 0 && !hits.some(x => Math.abs(x - s) < 0.01)) hits.push(s); // a ray through a vertex touches two edges at one spot: count it once
   }
   return hits.sort((a, b) => a - b);
 }
@@ -137,7 +150,7 @@ async function cachedFetch(url, ms) { // network first, but if it is slow (weak 
   if (!hit) return net;
   return Promise.race([net, new Promise((_, rej) => setTimeout(rej, ms || 3000))]).catch(() => hit);
 }
-async function loadDEM() { try { const buf = await (await cachedFetch('dem.bin', 5000)).arrayBuffer(); DEM = new Uint16Array(buf); render(); } catch (e) {} }
+async function loadDEM() { try { const buf = await (await cachedFetch('dem.bin', 5000)).arrayBuffer(); if (C && C.dem && buf.byteLength !== C.dem.rows * C.dem.cols * 2) return; DEM = new Uint16Array(buf); render(); } catch (e) {} } // a saved dem.bin from another grid size would read as garbage elevations
 const liveElev = {};
 function greenGridAt(p) { // feet, from the 1 m lidar grid of whichever green p is on
   for (const cn in C.courses) for (const h of C.courses[cn].holes) {
@@ -163,7 +176,8 @@ function elevAt(p) { // feet
   const key = p[0].toFixed(5) + ',' + p[1].toFixed(5);
   if (key in liveElev) return liveElev[key];
   liveElev[key] = null;
-  fetch(`https://epqs.nationalmap.gov/v1/json?x=${p[1]}&y=${p[0]}&wkid=4326&units=Feet&includeDate=false`).then(r => r.json()).then(j => { const v = +j.value; if (v > -1000) { liveElev[key] = v; render(); } }).catch(() => {});
+  fetch(`https://epqs.nationalmap.gov/v1/json?x=${p[1]}&y=${p[0]}&wkid=4326&units=Feet&includeDate=false`).then(r => r.json()).then(j => { const v = +j.value; if (v > -1000) { liveElev[key] = v; render(); } else retry(); }).catch(retry);
+  function retry() { setTimeout(() => { delete liveElev[key]; }, 60e3); } // a failed lookup is retried after a minute, not on every GPS fix
   return null;
 }
 
@@ -173,7 +187,8 @@ let wxModel = null, wxObs = null, wxLoading = false;
 function combineWx() {
   const obsFresh = wxObs && Date.now() - wxObs.ts < 40 * 60e3;
   if (!wxModel && !obsFresh) return;
-  const cur = obsFresh ? Object.assign({}, wxModel ? wxModel.current : {}, wxObs.current) : wxModel.current;
+  const cur = obsFresh ? Object.assign({}, wxModel ? wxModel.current : {}, wxObs.current) : Object.assign({}, wxModel.current);
+  if (obsFresh && wxObs.current.apparent_temperature == null) cur.apparent_temperature = null; // the model's feels-like must not ride along with a measured temperature
   if (cur.apparent_temperature == null) cur.apparent_temperature = cur.temperature_2m;
   wx = {current: cur, hourly: wxModel && wxModel.hourly, daily: wxModel && wxModel.daily,
         src: obsFresh ? 'DFW Airport (measured)' : 'Open-Meteo model', obsTs: obsFresh ? wxObs.ts : (wxModel && wxModel.ts)};
@@ -186,12 +201,18 @@ async function loadWx(force) {
     `&current=temperature_2m,relative_humidity_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,precipitation` +
     `&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation_probability&daily=sunrise,sunset` +
     `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FChicago&forecast_days=2&_=${Date.now()}`;
-  await Promise.all([
-    fetch(u, {cache: 'no-store'}).then(r => r.json()).then(j => { if (j.current) { j.ts = new Date(j.current.time + ':00-06:00').getTime() || Date.now(); wxModel = j; } }).catch(() => {}),
+  const got = await Promise.all([
+    fetch(u, {cache: 'no-store'}).then(r => r.json()).then(j => {
+      if (!j.current) return false;
+      // current.time is Chicago local time with no offset; the response carries the offset (CST or CDT), so use it
+      const off = j.utc_offset_seconds != null ? j.utc_offset_seconds : -6 * 3600;
+      j.ts = (new Date(j.current.time + ':00Z').getTime() - off * 1000) || Date.now(); wxModel = j; return true;
+    }).catch(() => false),
     loadNWS()
   ]);
   combineWx();
-  if (wx) { wxTs = Date.now(); wxErr = ''; } else wxErr = 'weather offline — retrying';
+  // only a fetch that actually succeeded counts as "checked now"; a dead zone keeps the old data but shows its real age
+  if (wx && got.some(Boolean)) { wxTs = Date.now(); wxErr = ''; } else if (!wx) wxErr = 'weather offline — retrying';
   wxLoading = false;
   const ae = document.activeElement;
   if (ae && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) { renderHeader(); return; }
@@ -201,15 +222,18 @@ async function loadNWS() { // DFW Airport (KDFW) live observation, ~1 mile from 
   try {
     const p = (await (await fetch('https://api.weather.gov/stations/KDFW/observations/latest', {cache: 'no-store'})).json()).properties;
     const v = o => o && o.value != null ? o.value : null, mph = x => x == null ? null : x / 1.609;
-    const t = v(p.temperature); if (t == null) return;
+    const t = v(p.temperature); if (t == null) return false;
     const ws = mph(v(p.windSpeed)) || 0, pr = v(p.barometricPressure);
-    const cur = {temperature_2m: t * 9 / 5 + 32, wind_speed_10m: ws, wind_direction_10m: v(p.windDirection) || 0, wind_gusts_10m: mph(v(p.windGust)) || ws};
+    // KDFW reports no direction for variable or calm wind: borrow the model's direction, or treat it as no wind rather than a north wind
+    const wd = v(p.windDirection), md = wxModel && wxModel.current ? wxModel.current.wind_direction_10m : null;
+    const cur = {temperature_2m: t * 9 / 5 + 32, wind_speed_10m: wd == null && md == null ? 0 : ws, wind_direction_10m: wd != null ? wd : (md || 0), wind_gusts_10m: mph(v(p.windGust)) || ws};
     if (v(p.relativeHumidity) != null) cur.relative_humidity_2m = Math.round(v(p.relativeHumidity));
     if (pr) cur.surface_pressure = pr / 100 - 20; // sea-level → ~560 ft station pressure
     if (cur.relative_humidity_2m == null && !(wxModel && wxModel.current)) cur.relative_humidity_2m = 50;
     if (cur.surface_pressure == null && !(wxModel && wxModel.current)) cur.surface_pressure = 995;
     wxObs = {current: cur, ts: new Date(p.timestamp).getTime()};
-  } catch (e) {}
+    return true;
+  } catch (e) { return false; }
 }
 function wxAge() { if (!wx) return ''; const s = Math.round((Date.now() - wxTs) / 1000); return `Live · ${wx.src} as of ${fmtClock(wx.obsTs)} · checked ${s < 60 ? s + 's' : Math.round(s / 60) + 'm'} ago`; }
 function airDensity(tF, hPa, rh) { // kg/m3, moist air
@@ -318,9 +342,15 @@ function nearestHole(p) {
 }
 function trackHoleByGPS() {
   if (!S || !S.started || S.ended || !gps || !onCourse(gps.p)) return;
-  const n = nearestHole(gps.p); if (!n) return;
-  if (!gpsCand || gpsCand.n !== n) { gpsCand = {n, ts: Date.now()}; return; }
-  if (Date.now() - gpsCand.ts < 30e3) return; // dwell 30 s
+  if (gps.acc > 30) return; // a weak fix (tunnel, cold start, pocket) must not move the round
+  const now = Date.now(), n = nearestHole(gps.p);
+  // off every hole (cart path, between tees) or a long gap in fixes: the dwell starts over, so one old fix cannot confirm a hole minutes later
+  // (60 s, not less: the phone's 3 m distance filter means fixes can pause while you stand still on the tee)
+  if (!n || (gpsCand && now - gpsCand.last > 60e3)) gpsCand = null;
+  if (!n) return;
+  if (!gpsCand || gpsCand.n !== n) { gpsCand = {n, ts: now, last: now}; return; }
+  gpsCand.last = now;
+  if (now - gpsCand.ts < 30e3) return; // dwell 30 s
   if (S.gpsHole !== n) {
     const prev = S.gpsHole;
     if (prev && S.holes[prev] && !S.holes[prev].gpsOut) S.holes[prev].gpsOut = gpsCand.ts;
@@ -350,14 +380,7 @@ function paceInfo() { // minutes ahead(-)/behind(+) of a 4:12 pace
 
 /* ---------------- scoring ---------------- */
 function counted(st) { return st.shots.filter(s => !s.g || s.g.counts).length; }
-function rel(n) {
-  const st = S && S.holes[n]; if (!st) return null;
-  const c = counted(st);
-  if (st.manual && st.adj != null) return st.adj;      // ± override wins until shots change
-  if (c) return c - H(n).par;                          // live from logged strokes
-  if (st.adj != null) return st.adj;                   // ± used with no shots logged
-  return st.done ? 0 : null;
-}
+function rel(n) { const st = S && S.holes[n]; return st ? relOf(st, H(n).par) : null; }
 function holeData(r, n) { return C.courses[r.course].holes[n - 1]; }
 function holeStats(r, n) { // auto from logged shots, overridable by taps
   const st = r.holes[n]; if (!st) return null;
@@ -379,8 +402,8 @@ function roundStats(r) {
   r.order.forEach(n => { const st = r.holes[n]; if (!st || !st.done) return; const s = holeStats(r, n), h = holeData(r, n);
     if (s.fir != null && h.par >= 4) { ft++; if (s.fir === 'hit') fh++; }
     if (s.gir != null) { gt++; if (s.gir) gh++; }
-    putts += s.putts; ph++;
-    const c = st.shots.filter(x => !x.g || x.g.counts).length, v = st.manual && st.adj != null ? st.adj : c ? c - h.par : (st.adj || 0);
+    if (st.putts != null || st.shots.some(x => !x.g || x.g.counts)) { putts += s.putts; ph++; } // a hole scored by number only has no putt count, not zero putts
+    const v = relOf(st, h.par);
     rel += v; thru++; dist[v <= -2 ? 'eagle' : v === -1 ? 'birdie' : v === 0 ? 'par' : v === 1 ? 'bogey' : 'dbl']++; });
   return {fh, ft, gh, gt, putts, ph, rel, thru, dist};
 }
@@ -406,7 +429,7 @@ function shotType(n, idx) {
   return 'Approach';
 }
 function logShot(n, player, type, gimmick) {
-  const st = hs(n), pos = me(); st.manual = false;
+  const st = hs(n), pos = me(); st.manual = false; st.adj = null; // logged strokes take over from any ± override
   const s = {p: player, ts: Date.now(), pos: pos || null, t: type || null};
   if (gimmick) s.g = gimmick;
   if (!s.t && !gimmick) s.t = shotType(n, st.shots.length);
@@ -427,9 +450,10 @@ function completeHole() {
   const n = viewHole, st = hs(n);
   st.done = true; st.endTs = Date.now(); if (!st.startTs) st.startTs = S.started;
   if (!counted(st) && st.adj == null) st.adj = 0;
+  if (n !== S.cur) { save(); render(); return; } // scoring a hole you browsed to: record it, but the round stays where it is
   const i = S.order.indexOf(n);
   if (i === S.order.length - 1) { S.ended = Date.now(); save(); endLive(); tab = 'card'; render(); return; }
-  const nx = S.order[i + 1]; S.cur = nx; viewHole = nx; target = null;
+  const nx = S.order[i + 1]; S.cur = nx; viewHole = nx; target = null; manualMe = null;
   const ns = hs(nx); if (!ns.startTs) ns.startTs = Date.now();
   save(); render(); fitHole(true);
 }
@@ -440,9 +464,14 @@ function advanceFrom(prev) { // move to the next hole, then ask for the score of
   if (!S || S.ended || S.preview) return;
   const i = S.order.indexOf(prev); if (i < 0 || i >= S.order.length - 1) return;
   const nx = S.order[i + 1], wasViewing = viewHole === prev;
-  S.cur = nx; if (wasViewing) { viewHole = nx; target = null; }
+  S.cur = nx; if (wasViewing) { viewHole = nx; target = null; manualMe = null; }
   const ns = hs(nx); if (!ns.startTs) ns.startTs = Date.now();
-  if (!hs(prev).done) pendingScore = prev;
+  const ps = hs(prev);
+  if (!ps.done) {
+    pendingScore = prev;
+    // strokes were logged: the hole counts from now on (the prompt can still correct it); "Later" must not drop it from the total
+    if (counted(ps)) { ps.done = true; if (!ps.endTs) ps.endTs = Date.now(); if (!ps.startTs) ps.startTs = S.started; }
+  }
   save(); render(); if (wasViewing) fitHole(true);
   if (pendingScore && !$('#modal').innerHTML) scorePrompt(pendingScore);
 }
@@ -458,65 +487,74 @@ function scorePrompt(n) {
 }
 function setHoleScore(n, k) {
   const st = hs(n), h = H(n);
-  if (k === counted(st)) st.manual = false; else { st.adj = k - h.par; st.manual = true; }
+  if (k === counted(st)) { st.manual = false; st.adj = null; } else { st.adj = k - h.par; st.manual = true; }
   st.done = true; if (!st.endTs) st.endTs = Date.now(); if (!st.startTs) st.startTs = S.started;
   save(); closeModal(); render();
 }
-function goBackTo(n) { // advanced by mistake
-  S.cur = n; viewHole = n; target = null; S.gpsHole = n; pendingScore = null; save(); closeModal(); render(); fitHole(true);
+function goBackTo(n) { // advanced by mistake: undo what the advance wrote, so hole times and pace stay honest
+  const nx = S.cur, ns = nx !== n ? S.holes[nx] : null;
+  if (ns && !ns.done && !counted(ns)) { delete ns.startTs; delete ns.gpsIn; } // the hole we jumped to never really started
+  const st = hs(n); st.done = false; delete st.endTs; delete st.gpsOut; // still playing this one
+  S.cur = n; viewHole = n; target = null; S.gpsHole = n; gpsCand = null; pendingScore = null; save(); closeModal(); render(); fitHole(true);
 }
 function quickShot() { if (S && S.started && !S.ended && !S.preview) logShot(S.cur, null); }
 
 /* ---------------- dictation ---------------- */
-const NUMW = {one: 1, two: 2, three: 3, four: 4, five: 5, a: 1, single: 1};
+const NUMW = {one: 1, two: 2, to: 2, too: 2, three: 3, four: 4, five: 5, 2: 2, 3: 3, 4: 4, 5: 5, a: 1, single: 1}; // "to/too putts" is how speech-to-text hears "two putts"
 function parseDictation(text, n) {
   const names = (S.mode === 'scramble' ? S.players : []).map((nm, i) => ({i, k: nm.trim().toLowerCase()})).filter(x => x.k);
   const findP = seg => {
     for (const x of names) { const re = new RegExp('\\b' + x.k.replace(/[^a-z0-9 ]/g, '') + "('?s)?\\b"); if (re.test(seg)) return x.i; }
-    for (const x of names) { if (x.k.length >= 3 && new RegExp('\\b' + x.k.slice(0, 3)).test(seg)) return x.i; }
+    const pre = names.filter(x => x.k.length >= 3 && new RegExp('\\b' + x.k.slice(0, 3).replace(/[^a-z0-9]/g, '')).test(seg));
+    if (pre.length === 1) return pre[0].i; // a 3-letter start only counts when it points at exactly one golfer
     if (/\b(me|my|i)\b/.test(seg)) { const t = names.find(x => x.i === 0); if (t) return 0; }
     return null;
   };
-  const typ = seg => /\b(drive|drove|tee ?shot|off the tee)\b/.test(seg) ? 'Drive' :
-    /\b(putts?|putted|made it|sank|holed|drained|tap ?in)\b/.test(seg) ? 'Putt' :
-    /\b(chip|chipped|pitch|pitched|bunker shot|sand|flop)\b/.test(seg) ? 'Chip' :
+  const typ = seg => /\b(drives?|driver|drove|tee ?shot|off the tee)\b/.test(seg) ? 'Drive' :
+    /\b(putts?|putted|putter|made it|sank|holed|drained|tap ?in)\b/.test(seg) ? 'Putt' :
+    /\b(chips?|chipped|pitch|pitched|bunker shot|sand|flop)\b/.test(seg) ? 'Chip' :
     /\b(lay ?up|second|layed up|laid up|fairway wood|hybrid)\b/.test(seg) ? 'Second' :
-    /\b(approach|iron|wedge|third|into the green|on the green|hit the green)\b/.test(seg) ? 'Approach' : null;
+    /\b(approach|irons?|wedges?|third|into the green|on the green|hit the green)\b/.test(seg) ? 'Approach' : null;
   const gim = seg => { const m = seg.match(/\b(mulligan|mully|string|throw|threw|kick|kicked|foot wedge|re-?tee|drop)\b/); if (!m) return null;
     const w = m[1]; const kind = /mul/.test(w) ? 'Mulligan' : /string/.test(w) ? 'String' : /thr/.test(w) ? 'Throw' : /kick|foot/.test(w) ? 'Kick' : w === 'drop' ? 'Drop' : 'Re-tee';
     const ft = seg.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(feet|foot|ft|inches|yards)/);
     return {kind, note: ft ? ft[0] : '', counts: false}; };
   const out = [];
   const segs = text.toLowerCase().replace(/[.;!?]/g, ',').split(/,|\bthen\b|\bafter that\b|\bnext\b|\band\b/).filter(s => s && s.trim().length > 1);
+  let lastP = null;
   for (let seg of segs) {
     seg = seg.trim();
-    const p = findP(seg), g = gim(seg); let t = typ(seg);
+    let p = findP(seg); const g = gim(seg); let t = typ(seg);
     if (!g && p == null && !t) continue;
-    let count = 1; const cm = seg.match(/\b(two|three|2|3)[ -]?putt/); if (cm) { count = +cm[1] || NUMW[cm[1]]; t = 'Putt'; }
+    if (p == null && t) p = lastP; // "Travis driver, two putts": the putts are Travis's too
+    if (p != null) lastP = p;
+    let count = 1; const cm = seg.match(/\b(two|three|four|five|2|3|4|5)[ -]?putt/) || seg.match(/\b(to|too)[ -]?putts\b/); if (cm) { count = NUMW[cm[1]] || 1; t = 'Putt'; } // "to putts" only in the plural, so "going to putt" stays one
     if (g) out.push({p, t: null, g});
     else for (let i = 0; i < count; i++) out.push({p, t});
   }
   return out;
 }
-let dictTimer = null;
+let dictTimer = null, dictRec = null, dictHole = null; // dictHole: the hole the sheet was opened for, so an auto-advance mid-sentence cannot move the shots
+function stopDictRec() { if (dictRec) { try { dictRec.abort(); } catch (e) {} dictRec = null; } }
 function startDictation() {
-  clearInterval(dictTimer);
+  clearInterval(dictTimer); stopDictRec();
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   openDictateSheet('');
   if (!SR) { $('#dictStatus').textContent = 'Voice not supported in this browser — tap the text box and use your keyboard mic 🎤.'; return; }
   try {
-    const r = new SR(); r.lang = 'en-US'; r.interimResults = true; r.continuous = false;
+    const r = new SR(); r.lang = 'en-US'; r.interimResults = true; r.continuous = false; dictRec = r;
     $('#dictStatus').textContent = '🎙 Listening… e.g. "Drew drive, Chris approach, Travis two putts"';
-    r.onresult = e => { let t = ''; for (const res of e.results) t += res[0].transcript; $('#dictTxt').value = t; previewDictation(); };
-    r.onerror = e => { $('#dictStatus').textContent = 'Mic error (' + e.error + ') — type or use keyboard mic instead.'; };
-    r.onend = () => { const s = $('#dictStatus'); if (!s) return;
-      if (parseDictation($('#dictTxt').value, viewHole).length) { let k = 3; s.textContent = 'Adding in 3… (tap the box to edit)'; dictTimer = setInterval(() => { const q = $('#dictStatus'); if (!q) { clearInterval(dictTimer); return; } if (--k <= 0) { clearInterval(dictTimer); applyDictation(); } else q.textContent = 'Adding in ' + k + '… (tap the box to edit)'; }, 1000); }
+    // an aborted recognizer ("Again" or Cancel) still fires onerror/onend afterwards: those must not touch the new sheet
+    r.onresult = e => { if (dictRec !== r) return; const box = $('#dictTxt'); if (!box) return; let t = ''; for (const res of e.results) t += res[0].transcript; box.value = t; previewDictation(); };
+    r.onerror = e => { if (dictRec !== r) return; const s = $('#dictStatus'); if (s) s.textContent = 'Mic error (' + e.error + ') — type or use keyboard mic instead.'; };
+    r.onend = () => { if (dictRec !== r) return; dictRec = null; const s = $('#dictStatus'); if (!s) return;
+      if (parseDictation($('#dictTxt').value, dictHole).length) { let k = 3; s.textContent = 'Adding in 3… (tap the box to edit)'; dictTimer = setInterval(() => { const q = $('#dictStatus'); if (!q) { clearInterval(dictTimer); return; } if (--k <= 0) { clearInterval(dictTimer); applyDictation(); } else q.textContent = 'Adding in ' + k + '… (tap the box to edit)'; }, 1000); }
       else if (/Listening/.test(s.textContent)) s.textContent = 'Didn\'t catch a shot — try again or type it.'; };
     r.start();
-  } catch (e) { $('#dictStatus').textContent = 'Mic unavailable — type or use keyboard mic.'; }
+  } catch (e) { dictRec = null; $('#dictStatus').textContent = 'Mic unavailable — type or use keyboard mic.'; }
 }
 function previewDictation() {
-  const items = parseDictation($('#dictTxt').value, viewHole), st = hs(viewHole);
+  const items = parseDictation($('#dictTxt').value, dictHole), st = hs(dictHole);
   let k = counted(st);
   $('#dictPrev').innerHTML = items.length ? items.map(it => it.g
     ? `<div class="shot"><span class="n g">G</span><span class="t">${esc(it.g.kind)} ${esc(it.g.note)} — ${it.p != null ? esc(S.players[it.p]) : 'team'}</span></div>`
@@ -524,7 +562,8 @@ function previewDictation() {
     : '<div class="mut small">Nothing recognized yet. Use player names + drive / approach / chip / putt / mulligan / string.</div>';
 }
 function openDictateSheet(txt) {
-  modal(`<h3 style="margin:0 0 6px">🎙 Dictate shots — Hole ${viewHole}</h3>
+  dictHole = viewHole;
+  modal(`<h3 style="margin:0 0 6px">🎙 Dictate shots — Hole ${dictHole}</h3>
     <div id="dictStatus" class="small mut"></div>
     <textarea id="dictTxt" rows="3" placeholder="Drew drive, Chris approach, Travis chip, Mike made the putt">${esc(txt)}</textarea>
     <div id="dictPrev" style="margin:8px 0"></div>
@@ -532,15 +571,15 @@ function openDictateSheet(txt) {
   $('#dictTxt').addEventListener('input', () => { clearInterval(dictTimer); previewDictation(); }); previewDictation();
 }
 function applyDictation() {
-  clearInterval(dictTimer);
-  const items = parseDictation($('#dictTxt').value, viewHole);
-  items.forEach(it => logShot(viewHole, it.p, it.t, it.g));
+  clearInterval(dictTimer); stopDictRec();
+  const n = dictHole != null ? dictHole : viewHole, items = parseDictation($('#dictTxt').value, n);
+  items.forEach(it => logShot(n, it.p, it.t, it.g));
   closeModal();
 }
 
 /* ---------------- modal helpers ---------------- */
 function modal(html) { $('#modal').innerHTML = `<div class="modal" onclick="if(event.target===this)closeModal()"><div class="sheet">${html}</div></div>`; }
-function closeModal() { $('#modal').innerHTML = ''; }
+function closeModal() { $('#modal').innerHTML = ''; clearInterval(dictTimer); stopDictRec(); } // closing the dictation sheet also stops the mic
 function gimmickSheet() {
   const pl = S.mode === 'scramble' ? `<label>Whose? (optional)</label><select id="gP"><option value="">Team</option>${S.players.map((p, i) => p ? `<option value="${i}">${esc(p)}</option>` : '').join('')}</select>` : '';
   modal(`<h3 style="margin:0 0 6px">Scramble gimmick — Hole ${viewHole}</h3>
@@ -616,7 +655,7 @@ let holeUp = (load(LS_PREF) || {}).holeUp !== false, flying = null;
 function holeBearing(h) { return bearing(teePos(h), greenC(h)); }
 // fit points into the map with the map rotated so the hole runs bottom (tee) -> top (green)
 function fitRotated(pts, b) {
-  const sz = map.getSize(), c = centroid(pts.concat([pts[0]]).slice(0, -1).length ? pts : pts);
+  const sz = map.getSize();
   let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9; const o = pts[0], t = toRad(b);
   pts.forEach(p => { const v = xy(p, o), x = v[0] * Math.cos(t) - v[1] * Math.sin(t), y = v[0] * Math.sin(t) + v[1] * Math.cos(t); minx = Math.min(minx, x); maxx = Math.max(maxx, x); miny = Math.min(miny, y); maxy = Math.max(maxy, y); });
   const cx = (minx + maxx) / 2, cy = (miny + maxy) / 2, ctr = fromXY([cx * Math.cos(t) + cy * Math.sin(t), -cx * Math.sin(t) + cy * Math.cos(t)], o);
@@ -645,12 +684,14 @@ function flyover() { // tee -> green fly-along, then back to the whole hole
   const stops = []; for (let d = 0; d <= total; d += 35) stops.push(along([tee].concat(path.slice(1)), d)); stops.push(greenC(h));
   let i = 0;
   const step = () => {
+    if (!map) { flying = null; return; } // the map was torn down (tab change) mid-flight
     if (i >= stops.length) { flying = setTimeout(() => { flying = null; fitHole(true); }, 1800); return; }
     map.setView(stops[i], i === stops.length - 1 ? 19.5 : 18, {animate: true, duration: 0.5}); i++;
     flying = setTimeout(step, 520);
   };
   map.setView(stops[0], 18, {animate: false}); flying = setTimeout(step, 400);
 }
+function killMap() { if (flying) { clearTimeout(flying); flying = null; } if (map) { map.remove(); map = null; mapHole = null; } } // a pending flyover must die with the map, or fitHole stays locked
 const icon = (cls, html) => L.divIcon({className: '', html: `<div class="${cls}">${html || ''}</div>`, iconSize: null});
 function drawMap() {
   initMap(); layers.clearLayers();
@@ -699,9 +740,12 @@ function layupInfo(from, n) {
   }
   return out;
 }
+let gvCache = {k: '', html: ''}; // the slope picture only changes with hole, pin or approach direction, not with every GPS fix
 function greenView(n, from) {
   const h = H(n), g = h.gz; if (!g) return '';
-  const gc = greenC(h), pin = pinOf(n), b = toRad(bearing(from, gc));
+  const gc = greenC(h), pin = pinOf(n), b = toRad(Math.round(bearing(from, gc) / 5) * 5);
+  const key = course() + ':' + n + ':' + pin[0] + ',' + pin[1] + ':' + b;
+  if (gvCache.k === key) return gvCache.html;
   const R = p => { const v = xy(p, gc); return [v[0] * Math.cos(b) - v[1] * Math.sin(b), v[0] * Math.sin(b) + v[1] * Math.cos(b)]; }; // approach = up
   const poly = h.green.map(R); let mx = 0; poly.forEach(p => mx = Math.max(mx, Math.abs(p[0]), Math.abs(p[1]))); const SC = 130 / (mx + 3);
   const P = v => [(150 + v[0] * SC).toFixed(1), (150 - v[1] * SC).toFixed(1)];
@@ -732,9 +776,9 @@ function greenView(n, from) {
     arrows += `<line x1="${q[0]}" y1="${q[1]}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${c}" stroke-width="2" marker-end="url(#ah${c.slice(1)})"/>`;
   });
   const mk = c => `<marker id="ah${c.slice(1)}" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="${c}"/></marker>`;
-  const pq = P(R(pin)), fbE = (elevAt(pin) != null && elevAt(gc) != null);
+  const pq = P(R(pin));
   const ft = ((zmax - zmin) / 100 * 3.28084).toFixed(1);
-  return `<div class="card"><div class="row"><b style="flex:2">🟢 Green slope — hole ${n}</b><span class="small mut" style="text-align:right">USGS 1 m lidar</span></div>
+  const html = `<div class="card"><div class="row"><b style="flex:2">🟢 Green slope — hole ${n}</b><span class="small mut" style="text-align:right">USGS 1 m lidar</span></div>
     <svg viewBox="0 0 300 300" style="width:100%;max-width:340px;display:block;margin:6px auto;background:#0b1410;border-radius:12px">
       <defs>${mk('#ffffff')}${mk('#f0b43c')}${mk('#ef6a5a')}</defs>
       ${svg}<polygon points="${poly.map(p => P(p).join(',')).join(' ')}" fill="none" stroke="#fff" stroke-width="2"/>${arrows}
@@ -742,19 +786,33 @@ function greenView(n, from) {
       <text x="150" y="292" fill="#9fb0a6" font-size="13" text-anchor="middle">▲ you approach from here</text></svg>
     <div style="font-size:18px"><b>Falls ${dirTxt}</b> · ${tilt.toFixed(1)}% overall · ${ft} ft high-to-low</div>
     <div class="small mut">Arrows run downhill: white &lt;1.5%, yellow 1.5–3%, red &gt;3%. Lighter = higher ground.</div></div>`;
+  gvCache = {k: key, html};
+  return html;
 }
 function hazardsFrom(from, h) {
   const pin = pinOf(h.n), D = distM(from, pin), v = xy(pin, from), L0 = Math.hypot(v[0], v[1]) || 1, u = [v[0] / L0, v[1] / L0];
   const g = greenC(h), res = [];
   h.hz.forEach(z => {
-    const c = centroid(z.p), cv = xy(c, from), proj = cv[0] * u[0] + cv[1] * u[1], side = u[0] * cv[1] - u[1] * cv[0];
-    if (proj < -5 || proj > D + 25) return;
-    const reach = polyNear(from, z.p) * YD, carry = polyFar(from, z.p) * YD; if (reach < 3 && inside(from, z.p)) return;
+    const P = z.p; if (!P || P.length < 2) return;
+    const closed = P.length > 3 && P[0][0] === P[P.length - 1][0] && P[0][1] === P[P.length - 1][1]; // creeks are open lines, not rings
+    // where the hazard sits along the line of play: projections of its points onto from→pin (m), and how far off the line it comes
+    let pMin = 1e9, pMax = -1e9, sMin = 1e9;
+    P.forEach(q => { const w = xy(q, from), pr = w[0] * u[0] + w[1] * u[1]; pMin = Math.min(pMin, pr); pMax = Math.max(pMax, pr); sMin = Math.min(sMin, Math.abs(u[0] * w[1] - u[1] * w[0])); });
+    if (pMax < 0 || pMin > D + 25 || sMin > 80) return; // entirely behind you, well past the pin, or far off to the side
+    if (closed && inside(from, P)) return; // standing in it
+    // where the line of play crosses it (this side of the pin): reach = where you enter it, carry = where you are over it
+    const hits = rayHits(from, pin, P).filter(s => s <= D + 25);
+    const nearM = closed ? polyNear(from, P) : lineDist(from, P);
+    let reachM, carryM;
+    if (hits.length) { reachM = hits[0]; carryM = hits.length > 1 ? hits[1] : (closed ? null : hits[0]); } // a lake crossed twice: the first pair; a creek line: one number
+    else { reachM = nearM; carryM = pMax <= D + 25 ? Math.max(nearM, pMax) : null; } // beside the line: carry = past its far end, none if it runs past the pin
+    const reach = reachM * YD, carry = carryM == null ? null : carryM * YD;
     if (reach > 300) return; // only hazards within 300 yards
-    const near = distM(c, g) < 35;
-    const lat = Math.abs(side) < 8 ? 'center' : side > 0 ? 'left' : 'right';
-    const rp = nearestPt(from, z.p), cp = farPt(from, z.p);
-    res.push({name: (z.t === 'b' ? 'Bunker' : 'Water') + ' ' + (near ? (lat === 'center' ? 'front of green' : 'green ' + lat) : lat), reach, carry, reachPl: rp ? playsLike(from, rp).total : reach, carryPl: playsLike(from, cp).total, t: z.t});
+    const near = distM(centroid(P), g) < 35;
+    const rp = hits.length ? fromXY([u[0] * reachM, u[1] * reachM], from) : nearestPt(from, P), cp = carryM == null ? null : fromXY([u[0] * carryM, u[1] * carryM], from);
+    const rw = rp ? xy(rp, from) : [0, 0], side = u[0] * rw[1] - u[1] * rw[0];
+    const lat = hits.length || Math.abs(side) < 8 ? 'center' : side > 0 ? 'left' : 'right';
+    res.push({name: (z.t === 'b' ? 'Bunker' : 'Water') + ' ' + (near ? (lat === 'center' ? 'front of green' : 'green ' + lat) : lat), reach, carry, reachPl: rp ? playsLike(from, rp).total : reach, carryPl: cp ? playsLike(from, cp).total : null, t: z.t});
   });
   return res.sort((a, b) => a.reach - b.reach).slice(0, 8);
 }
@@ -767,7 +825,7 @@ function render() {
   if (vk !== lastView) { lastView = vk; const m = $('#main'); if (m) setTimeout(() => { m.scrollTop = 0; }, 0); }
   renderHeader(); renderBanner();
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
-  if (tab === 'hole') renderHole(); else { if (map) { map.remove(); map = null; mapHole = null; } if (tab === 'card') renderCard(); else if (tab === 'pins') renderPins(); else renderInfo(); }
+  if (tab === 'hole') renderHole(); else { killMap(); if (tab === 'card') renderCard(); else if (tab === 'pins') renderPins(); else renderInfo(); }
 }
 function renderHeader() {
   $('#hdrSub').innerHTML = S && S.name ? `<b style="color:var(--fg)">${esc(S.name)}</b><br>${course()} · ${tee()}` : `${course()} · ${tee()} tees${S ? ' · ' + (S.mode === 'scramble' ? 'Scramble' : 'Solo') : ''}`;
@@ -778,18 +836,23 @@ function renderHeader() {
 }
 function renderBanner() {
   let html = '';
+  if (saveErr) html += `<div class="banner" style="background:var(--bad);color:#fff"><span style="flex:1">⚠️ Phone storage is full — scores are NOT being saved. Delete old rounds or the pin photo.</span></div>`;
   if (S && S.started && !S.ended && S.gpsHole && S.gpsHole !== S.cur && !(S.holes[S.gpsHole] || {}).done && gps && onCourse(gps.p)) {
-    html = `<div class="banner"><span style="flex:1">GPS says you're on hole ${S.gpsHole}</span><button class="sm" onclick="goHole(${S.gpsHole},true)">Switch</button><button class="sm" onclick="S.gpsHole=S.cur;save();render()">✕</button></div>`;
+    html += `<div class="banner"><span style="flex:1">GPS says you're on hole ${S.gpsHole}</span><button class="sm" onclick="goHole(${S.gpsHole},true)">Switch</button><button class="sm" onclick="S.gpsHole=S.cur;save();render()">✕</button></div>`;
   }
   $('#banner').innerHTML = html;
 }
-function goHole(n, makeCur) { viewHole = n; target = null; if (makeCur && S) { S.cur = n; const st = hs(n); if (!st.startTs) st.startTs = Date.now(); save(); } render(); fitHole(true); }
+function goHole(n, makeCur) { if (n !== viewHole) manualMe = null; viewHole = n; target = null; if (makeCur && S) { S.cur = n; const st = hs(n); if (!st.startTs) st.startTs = Date.now(); save(); } render(); fitHole(true); }
 function stepHole(d) { const ord = S ? S.order : [...Array(18)].map((_, i) => i + 1); const i = ord.indexOf(viewHole); goHole(ord[(i + d + 18) % 18], false); }
 
 function liveHtml(part) {
   const n = viewHole, h = H(n), st = hs(n), from = posFor(n), pin = pinOf(n);
   const fb = (() => { const hits = rayHits(from, pin, h.green); if (inside(from, h.green)) return {f: 0, b: polyFar(from, h.green) * YD}; if (hits.length >= 2) return {f: hits[0] * YD, b: hits[hits.length - 1] * YD}; return {f: polyNear(from, h.green) * YD, b: polyFar(from, h.green) * YD}; })();
   const pl = playsLike(from, pin), mid = yds(from, pin);
+  const gpsOn = !manualMe && gps && onCourse(gps.p) && onThisHole(n, gps.p) && Date.now() - gps.ts < 120e3;
+  if (part === 'top') return (NATIVE ? `<div class="row" style="padding:6px 12px 0;gap:6px"><span class="small mut" style="flex:0 0 auto">GPS source</span><button class="sm ${gpsSrc === 'phone' ? 'on' : ''}" onclick="setGpsSource('phone')">📱 Phone</button><button class="sm ${gpsSrc === 'watch' ? 'on' : ''}" onclick="setGpsSource('watch')">⌚ Watch${watchPaired ? '' : ' (not linked)'}</button></div>` : '') + `  <div class="dist big" style="margin-top:6px"><div class="mid"><div class="lab">${gpsOn ? '<span class="liveDot"></span>Live distance' : 'Distance'} to ${st.pin ? 'pin' : 'middle'}</div><div class="num">${Math.round(mid)}</div><div class="small mut">yards</div></div>
+    <div class="pls"><div class="lab">Plays like</div><div class="num">${Math.round(pl.total)}</div><div class="small mut">${pl.dh != null ? (pl.dh >= 0 ? '▲' : '▼') + Math.abs(Math.round(pl.dh)) + ' ft · ' : ''}${wx ? 'wind ' + (pl.head > 2 ? 'into' : pl.head < -2 ? 'helping' : 'cross') : 'weather loading'}</div></div></div>
+`; // the big numbers need none of the hazard / layup / weather work below
   let tgtHtml = '';
   if (target) {
     const a = playsLike(from, target), b = playsLike(target, pin);
@@ -800,25 +863,26 @@ function liveHtml(part) {
   const hz = hazardsFrom(from, h);
   const c = wx && wx.current;
   const wxHtml = c ? (() => { const rel = c.wind_direction_10m - bearing(from, pin) + 180; return `<span class="chip">🌡 <b>${Math.round(c.temperature_2m)}°</b></span><span class="chip">💨 <b>${Math.round(c.wind_speed_10m)}</b> mph ${compass(c.wind_direction_10m)} (gust ${Math.round(c.wind_gusts_10m)}) <span class="windArrow" style="transform:rotate(${rel}deg)">⬆</span> ${pl.head > 2 ? '<b>into</b>' : pl.head < -2 ? '<b>helping</b>' : 'cross'}</span><span class="chip">💧 ${c.relative_humidity_2m}%</span><span class="chip">${Math.round(c.surface_pressure)} hPa</span><span class="chip">🔄 ${wxAge()}</span>`; })() : `<span class="chip">${wxErr || 'loading weather…'}</span>`;
-  const gpsOn = !manualMe && gps && onCourse(gps.p) && onThisHole(n, gps.p) && Date.now() - gps.ts < 120e3;
-  if (part === 'top') return (NATIVE ? `<div class="row" style="padding:6px 12px 0;gap:6px"><span class="small mut" style="flex:0 0 auto">GPS source</span><button class="sm ${gpsSrc === 'phone' ? 'on' : ''}" onclick="setGpsSource('phone')">📱 Phone</button><button class="sm ${gpsSrc === 'watch' ? 'on' : ''}" onclick="setGpsSource('watch')">⌚ Watch${watchPaired ? '' : ' (not linked)'}</button></div>` : '') + `  <div class="dist big" style="margin-top:6px"><div class="mid"><div class="lab">${gpsOn ? '<span class="liveDot"></span>Live distance' : 'Distance'} to ${st.pin ? 'pin' : 'middle'}</div><div class="num">${Math.round(mid)}</div><div class="small mut">yards</div></div>
-    <div class="pls"><div class="lab">Plays like</div><div class="num">${Math.round(pl.total)}</div><div class="small mut">${pl.dh != null ? (pl.dh >= 0 ? '▲' : '▼') + Math.abs(Math.round(pl.dh)) + ' ft · ' : ''}${wx ? 'wind ' + (pl.head > 2 ? 'into' : pl.head < -2 ? 'helping' : 'cross') : 'weather loading'}</div></div></div>
-`;
   return `  <div class="small mut" style="padding:4px 12px">${posLabel()}${tapMode !== 'target' ? ` — <b class="warnTxt">tap the map to place ${tapMode === 'pin' ? 'the pin' : 'yourself'}</b>` : ' — tap map to measure'}</div>
   <div class="dist"><div><div class="lab">Front</div><div class="num sm2">${Math.round(fb.f)}</div><div class="pl">plays ${Math.round(fb.f + (pl.total - pl.d))}</div></div>
     <div><div class="lab">Back</div><div class="num sm2">${Math.round(fb.b)}</div><div class="pl">plays ${Math.round(fb.b + (pl.total - pl.d))}</div></div></div>
   <div style="padding:0 12px"><div class="chips">${plChips(pl)}</div><div class="chips">${wxHtml}</div></div>
   ${tgtHtml}
   ${(() => { const li = layupInfo(from, n); if (!li.layup && !li.corner) return ''; return `<div class="card">${li.corner ? `<div class="hz"><span>↪️ Dogleg ${li.corner.dir} — to the corner</span><span><b>${Math.round(li.corner.d)}</b> <span class="warnTxt">(${Math.round(li.corner.pl)})</span></span></div><div class="small mut" style="margin:-4px 0 4px">${Math.round(li.corner.toPin)} from the corner to the pin</div>` : ''}${li.layup ? `<div class="hz"><span>🎯 Lay up to leave ${li.layup.leave}</span><span><b>${Math.round(li.layup.d)}</b> <span class="warnTxt">(${Math.round(li.layup.pl)})</span></span></div>` : ''}</div>`; })()}
-  ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS WITHIN 300 — reach / carry <span class="warnTxt">(plays like)</span></div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="warnTxt">(${Math.round(z.reachPl)})</span> <span class="k">/</span> <b>${Math.round(z.carry)}</b> <span class="warnTxt">(${Math.round(z.carryPl)})</span></span></div>`).join('')}</div>` : ''}
+  ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS WITHIN 300 — reach / carry <span class="warnTxt">(plays like)</span></div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="warnTxt">(${Math.round(z.reachPl)})</span> <span class="k">/</span> ${z.carry != null ? `<b>${Math.round(z.carry)}</b> <span class="warnTxt">(${Math.round(z.carryPl)})</span>` : '<span class="mut">—</span>'}</span></div>`).join('')}</div>` : ''}
   ${h.note ? `<div class="card small">📝 ${esc(h.note)}</div>` : ''}
   ${greenView(n, posFor(n))}
 `;
 }
+let lastLiveHtml = '', lastTopHtml = '';
 function liveUpdate() { // called on every GPS fix: refresh numbers + map overlays, keep the rest of the screen untouched
   if (document.hidden) { if (S && NATIVE) pushNativeState(); return; } // screen locked / app backgrounded: skip all drawing, just feed the lock screen + Watch
   if (tab !== 'hole' || !S || !$('#live')) return;
-  $('#live').innerHTML = liveHtml(); $('#liveTop').innerHTML = liveHtml('top'); renderBanner(); pushNativeState();
+  // only rewrite what changed: replacing the DOM under a finger swallows the tap (GPS source buttons, target ✕)
+  const a = liveHtml(), b = liveHtml('top');
+  if (a !== lastLiveHtml) { lastLiveHtml = a; $('#live').innerHTML = a; }
+  if (b !== lastTopHtml) { lastTopHtml = b; $('#liveTop').innerHTML = b; }
+  renderBanner(); pushNativeState();
   // the map only redraws when you've moved ~3 yd (or every 15 s): saves battery over a round
   const p = posFor(viewHole), now = Date.now();
   if (!lastDraw.p || lastDraw.h !== viewHole || yds(p, lastDraw.p) > 3 || now - lastDraw.t > 15000) { drawMap(); lastDraw = {t: now, p, h: viewHole}; }
@@ -844,7 +908,7 @@ function renderHole() {
   `;
   const bodyHtml = `
   <div class="tapmodes"><button class="sm ${tapMode === 'target' ? 'on' : ''}" onclick="tapMode='target';render()">🎯 Target</button><button class="sm ${tapMode === 'pin' ? 'on' : ''}" onclick="tapMode='pin';render()">⛳ Set pin</button><button class="sm ${tapMode === 'me' ? 'on' : ''}" onclick="if(manualMe){manualMe=null;tapMode='target'}else tapMode='me';render()">📍 ${manualMe ? 'Use GPS' : 'Me'}</button><button class="sm" onclick="fitHole(true)">⤢</button><button class="sm ${holeUp ? 'on' : ''}" onclick="toggleHoleUp()" title="Hole-up map">⬆︎</button><button class="sm" onclick="flyover()" title="Flyover">🎬</button></div>
-  <div id="live">${liveHtml()}</div>
+  <div id="live">${(lastLiveHtml = liveHtml())}</div>
   ${S.preview ? `<div class="card"><b>Preview mode</b> — browsing holes only.<button class="pri" style="width:100%;margin-top:8px" onclick="S=null;render()">◀ Back to round setup</button></div>` : `<div class="card">
     <div class="row"><b style="flex:2">${S.mode === 'scramble' ? '👥 Team shots' : 'Shots'} · Hole ${n}</b><button class="sm" onclick="startDictation()">🎙 Dictate</button>${S.mode === 'scramble' ? '<button class="sm" onclick="gimmickSheet()">🎲 Gimmick</button>' : ''}</div>
     ${players}
@@ -860,16 +924,16 @@ function renderHole() {
   </div>`}
   <div style="height:20px"></div>`;
   if (!$('#holeTop') || !$('#map') || !$('#liveTop')) {
-    if (map) { map.remove(); map = null; mapHole = null; }
+    killMap();
     $('#main').innerHTML = '<div id="holeTop"></div><div id="liveTop"></div><div id="map" style="margin-top:8px"></div><div id="holeBody"></div>';
   }
-  $('#holeTop').innerHTML = topHtml; $('#liveTop').innerHTML = liveHtml('top'); $('#holeBody').innerHTML = bodyHtml;
+  $('#holeTop').innerHTML = topHtml; $('#liveTop').innerHTML = (lastTopHtml = liveHtml('top')); $('#holeBody').innerHTML = bodyHtml;
   const fresh = !map;
   drawMap();
   if (fresh) setTimeout(() => { if (map) { map.invalidateSize(); fitHole(true); } }, 80);
 }
 function bump(d) { const n = viewHole, st = hs(n); const base = rel(n) != null ? rel(n) : 0; st.adj = base + d; st.manual = true; save(); render(); }
-function delShot(n, i) { const st = hs(n); st.shots.splice(i, 1); st.manual = false; save(); render(); }
+function delShot(n, i) { const st = hs(n); st.shots.splice(i, 1); st.manual = false; st.adj = null; save(); render(); } // no stale ± left behind to show as a score
 function gimme() { // counted stroke, credited to no one, then close the hole
   const n = viewHole, st = hs(n); st.manual = false;
   st.shots.push({p: null, ts: Date.now(), pos: me() || null, t: 'Putt', gimme: true});
@@ -886,7 +950,7 @@ function setStart(n) { // change starting hole mid-round (keeps everything alrea
   save(); render();
 }
 function renderSetup() {
-  if (map) { map.remove(); map = null; mapHole = null; }
+  killMap();
   const tees = TEES.map(t => `<option ${t === pref.tee ? 'selected' : ''}>${t}</option>`).join('');
   $('#main').innerHTML = `<div class="card">
     <h2 style="margin:0 0 4px">New round</h2><div class="mut small">Bear Creek Golf Club · DFW Airport</div>
@@ -911,6 +975,7 @@ function startRound() {
   if (pref.mode === 'scramble' && !players.some(p => p)) { players[0] = 'Golfer 1'; players[1] = 'Golfer 2'; players[2] = 'Golfer 3'; players[3] = 'Golfer 4'; }
   S = {id: 'r' + Date.now(), name: (pref.roundName || '').trim() || defaultName(), course: pref.course, tee: pref.tee, mode: pref.mode, players, order, started: Date.now(), cur: order[0], holes: {}};
   pref.roundName = ''; savePref();
+  manualMe = null; gpsCand = null; pendingScore = null; target = null;
   hs(order[0]).startTs = S.started; viewHole = order[0]; tab = 'hole'; save(); requestWake(); render(); loadWx(true);
 }
 function previewCourse() {
@@ -919,7 +984,8 @@ function previewCourse() {
 }
 function endRound() {
   if (!confirm('Finish this round? It stays saved on this phone — you can reopen it from the round list.')) return;
-  S.ended = S.ended || Date.now(); save(); endLive(); S = null; try { localStorage.removeItem(LS_KEY); } catch (e) {} tab = 'hole'; render();
+  const cs = S.holes[S.cur]; if (cs && !cs.done && counted(cs)) { cs.done = true; cs.endTs = Date.now(); if (!cs.startTs) cs.startTs = S.started; } // strokes on the last hole count
+  S.ended = S.ended || Date.now(); save(); endLive(); S = null; manualMe = null; gpsCand = null; pendingScore = null; try { localStorage.removeItem(LS_KEY); } catch (e) {} tab = 'hole'; render();
 }
 
 let cardSel = {tee: null, hole: null};
@@ -989,12 +1055,15 @@ function shareCard() {
   if (navigator.share) navigator.share({text: s}).catch(() => {}); else { navigator.clipboard && navigator.clipboard.writeText(s); alert('Copied to clipboard'); }
 }
 
+const LS_PHOTO_TS = LS_PHOTO + '_ts';
+function showPhoto() { let p = null; try { p = localStorage.getItem(LS_PHOTO); } catch (e) {} if (!p) return; modal(`<img src="${p}" style="width:100%;border-radius:10px;display:block"><button style="width:100%;margin-top:8px" onclick="closeModal()">Close</button>`); }
+function removePhoto() { if (!confirm('Remove the pin sheet photo?')) return; try { localStorage.removeItem(LS_PHOTO); localStorage.removeItem(LS_PHOTO_TS); } catch (e) {} render(); }
 function renderPins() {
-  const photo = localStorage.getItem(LS_PHOTO);
+  let photo = null, photoTs = 0; try { photo = localStorage.getItem(LS_PHOTO); photoTs = +localStorage.getItem(LS_PHOTO_TS) || 0; } catch (e) {}
   const rows = S ? S.order.map(n => { const st = hs(n), h = H(n), g = greenAxis(h); return `<tr><td><b>${n}</b></td><td>${st.pin ? '✅' : '<span class="mut">mid</span>'}</td><td>${['F', 'M', 'B'].map((k, i) => `<button class="sm" onclick="quickPin(${n},${[0.25, 0.5, 0.75][i]})">${k}</button>`).join(' ')}</td><td class="small mut">${Math.round(g.depthYds)}y deep</td><td><button class="sm" onclick="tab='hole';tapMode='pin';goHole(${n},false)">tap</button> ${st.pin ? `<button class="sm" onclick="hs(${n}).pin=null;save();render()">✕</button>` : ''}</td></tr>`; }).join('') : '';
   $('#main').innerHTML = `<div class="card"><b>📷 Pin sheet</b><div class="small mut">Snap the pin sheet the starter hands out. It stays on this phone so you can check it on every hole.</div>
     <button class="pri" style="width:100%;margin-top:8px" onclick="$('#photoIn').click()">${photo ? 'Retake photo' : 'Take photo of pin sheet'}</button>
-    ${photo ? `<a href="${photo}" target="_blank"><img id="photo" src="${photo}" style="margin-top:8px"></a><div class="small mut">Tap photo to open full-size and pinch-zoom.</div>` : ''}</div>
+    ${photo ? `<img id="photo" src="${photo}" style="margin-top:8px" onclick="showPhoto()"><div class="small mut">${photoTs ? '📅 Taken ' + new Date(photoTs).toLocaleDateString([], {month: 'short', day: 'numeric'}) + ' ' + fmtClock(photoTs) + ' · ' : ''}Tap the photo to view it full-size.</div><button class="sm" style="margin-top:6px" onclick="removePhoto()">🗑 Remove photo</button>` : ''}</div>
   ${S ? `<div class="card"><b>Set today's pins</b><div class="small mut">Quick: F / M / B = front, middle, back third of the green. Exact: type them below, or use "tap" to drop the pin on the map. Distances update right away.</div>
     <table style="margin-top:6px"><tr><th>#</th><th></th><th>Quick</th><th>Green</th><th>Map</th></tr>${rows}</table></div>
   <div class="card"><b>Type exact pins</b><div class="small mut">One per line: <code>hole  yards-on  [L/R yards]</code><br>e.g. <code>1 22 L4</code> · <code>2 12</code> · <code>3 30 R6</code> · <code>4 18 C</code></div>
@@ -1014,7 +1083,7 @@ $('#photoIn').addEventListener('change', e => {
   const f = e.target.files[0]; if (!f) return;
   const img = new Image(), url = URL.createObjectURL(f);
   img.onload = () => { const k = Math.min(1, 1600 / Math.max(img.width, img.height)), cv = document.createElement('canvas'); cv.width = img.width * k; cv.height = img.height * k; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-    try { localStorage.setItem(LS_PHOTO, cv.toDataURL('image/jpeg', 0.8)); } catch (er) { alert('Photo too large to store'); } URL.revokeObjectURL(url); render(); };
+    try { localStorage.setItem(LS_PHOTO, cv.toDataURL('image/jpeg', 0.8)); localStorage.setItem(LS_PHOTO_TS, String(Date.now())); } catch (er) { alert('Photo too large to store'); } URL.revokeObjectURL(url); render(); };
   img.src = url; e.target.value = '';
 });
 
@@ -1051,10 +1120,15 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 /* ---------------- manual update ---------------- */
 async function forceUpdate() {
+  if (!navigator.onLine) { alert('No signal — connect to Wi-Fi or cellular to update the app.'); return; }
   const b = $('#updBtn'); if (b) b.textContent = '⏳';
   try { save(); } catch (e) {}
-  try { await Promise.all(['./', 'index.html', 'app.js', 'course.json', 'sw.js', 'manifest.json'].map(f => fetch(f, {cache: 'reload'}).catch(() => {}))); } catch (e) {}
-  try { if ('caches' in window) { for (const k of await caches.keys()) if (/^bcgps-v/.test(k)) await caches.delete(k); } } catch (e) {}
+  // refresh the real script URLs (app.js?v=N, vendor/…), and only wipe the caches once every file came back: a failed update must not leave the app empty
+  const files = ['./', 'index.html', 'sw.js', 'course.json', 'manifest.json'].concat([...document.scripts].map(s => s.getAttribute('src')).filter(Boolean));
+  let ok = false;
+  try { const rs = await Promise.all(files.map(f => fetch(f, {cache: 'reload'}).catch(() => null))); ok = rs.every(r => r && r.ok); } catch (e) {}
+  if (!ok) { if (b) b.textContent = '🔄'; alert('Could not reach the server — try again with better signal.'); return; }
+  try { if ('caches' in window) { for (const k of await caches.keys()) if (/^bcgps-v/.test(k) || k === 'bcgps-data') await caches.delete(k); } } catch (e) {}
   try { if (navigator.serviceWorker) { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } } catch (e) {}
   location.replace(location.pathname + '?u=' + Date.now());
 }
