@@ -52,3 +52,19 @@
 - `hazardsFrom(from, h)` takes the pin from the *current* course (`pinOf(h.n)`): checking an East hole while a West round is open gives nonsense. Set `S.course` first.
 - Line-number-based test harnesses (`L.slice(a, b)` on app.js) die on the first edit. Extract functions by name or run the real app in headless Chromium.
 - The web-app scenario harness is `tests/verify.js` (31 checks, headless Chromium). Serve the repo on port 8766 first. It is not bundled, so the workflows never touch it.
+
+## From the 2026-11-09 second sweep (Trophy Club + parallel audit)
+### Trophy Club data (course.json, build.py)
+- **Whitworth 15 pond** is hand-traced in build.py; its ring is now closed, but about 7% of the 15th green lies inside it, so the trace is a few metres off. Needs a look at the imagery. The same pond is listed on hole 12.
+- **Whitworth 15 Junior tee = 65 yd** is what GolfPass and TheGrint publish (Silver is 276). Almost certainly a card typo; the Junior marker lands in the pond. Left as published.
+- **Trophy Club has no usable fairway polygons**: the OSM download carried the 20 fairway relations without geometry. Fairway-hit stats and the fairway outline are blank there. Re-fetch tcc_osm.json with relation members (`out geom` on relations) to fix.
+- **Hogan 8 and 13 OSM lines start at a forward tee** (159 yd vs 210 Blue; 378 vs 418), so the Blue/Copper tee markers are extrapolated 30-45 m behind the line start. Same pattern as West 17.
+- Whitworth has no tee polygons in OSM at all; its tee markers are card yardage walked back along the traced line (1-14 yd inside the traced start). Correct them on the course if they look off.
+- Hogan 1's green is 238 m², just under the usual 250 m² floor; plausible for its elevated green.
+- GolfPass's own tee table for Trophy Club is stale (Hogan Blue 6953 / 72.8 / 123 vs the card's 7060 / 74.1 / 133). course.json follows TheGrint and the club.
+### Offline maps
+- Trophy Club's offline map is about 3,000 tiles (~66 MB), three times Bear Creek. Save it on Wi-Fi; iOS may evict it. "✅ Saved" comes from localStorage and is not re-verified against the cache.
+### Native (added to the earlier lists; the other session's commits resolved or half-resolved several items, see decisions)
+- Still open on the iPhone: `updateApplicationContext` swallows NSNull; location denial before page ready is lost; `webReady` never resets on a page reload or web-process death, so commands are dropped silently; `pendingCmds` has no expiry; `Bridge` is created lazily by SwiftUI so a background relaunch may never create it; coarse 100 m phone fallback fixes (the web app now ignores them when a better recent fix exists); the screen now auto-locks mid-round and the web view may be suspended while locked (device-test one locked round).
+- Still open on the Watch: `step()` snaps back to the phone's hole after 60 s and drops the pin; shot send has no ack/dedupe and can double-log; no stale/no-fix indicator; `pausesLocationUpdatesAutomatically`; workout recovery; complication timeline is a single entry; wrist-down accuracy can show a 15 yd stale number on raise.
+

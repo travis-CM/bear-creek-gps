@@ -41,7 +41,7 @@ nav.tabs button.on{color:var(--acc);background:none;font-weight:700}
 .mut{color:var(--mut)}
 .small{font-size:12px}
 #liveTop{position:sticky;top:0;z-index:1100;background:var(--bg);padding-bottom:6px;box-shadow:0 6px 10px -6px #000}
-#map{height:40vh;min-height:240px;background:#223}
+#map{height:34vh;min-height:220px;background:#223}
 .holebar{display:flex;align-items:center;gap:8px;padding:5px 12px;background:var(--card)}
 .holebar .h{flex:1;text-align:center}
 .holebar .h b{font-size:20px}
@@ -53,6 +53,14 @@ nav.tabs button.on{color:var(--acc);background:none;font-weight:700}
 .dist .pls .num{font-size:60px;line-height:1;font-weight:800;color:var(--acc)}
 .dist .num.sm2{font-size:40px}
 .dist.big>div{padding:10px 4px}
+.dist.nogps{outline:2px solid var(--acc2);outline-offset:-2px;border-radius:12px}
+.dist.nogps .mid .num{color:var(--mut)}
+.dist.nogps .lab{color:var(--acc)}
+.strip{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:6px 12px 0;padding:6px 10px;background:var(--card);border-radius:10px;font-size:16px;color:var(--mut)}
+.strip>span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.strip b{color:var(--fg);font-size:18px}
+.strip.aim{color:var(--warn)}
+.strip button{flex:0 0 auto}
 .dist .pl{font-size:18px;color:var(--acc);font-weight:600}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .chip{background:var(--card2);border-radius:20px;padding:4px 10px;font-size:14px;color:var(--mut)}
@@ -123,6 +131,6 @@ tr:has(td.x1) td.x1:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 
 <script src="vendor/leaflet.js"></script>
 <script src="vendor/leaflet-rotate.js"></script>
-<script src="app.js?v=26"></script>
+<script src="app.js?v=27"></script>
 </body>
 </html>

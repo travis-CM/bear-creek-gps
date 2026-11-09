@@ -28,17 +28,18 @@ if (!(pref.start >= 1 && pref.start <= 18)) pref.start = 1;
 
 function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
 const LS_ROUNDS = 'bcgps_rounds_v1';
-function rounds() { // saved rounds; skips broken entries (old versions / corrupt storage) so they can't break the screen
-  const r = load(LS_ROUNDS); if (!r || typeof r !== 'object') return {};
-  for (const k in r) { const x = r[k]; if (!x || !Array.isArray(x.order) || !x.holes || (C && C.courses && !C.courses[x.course])) delete r[k]; else x.id = x.id || k; }
-  return r;
+function rawRounds() { const r = load(LS_ROUNDS); return r && typeof r === 'object' ? r : {}; } // everything in storage, untouched
+function rounds() { // saved rounds that can be shown: broken entries or rounds on a course missing from today's data are skipped on screen, never deleted from storage
+  const r = rawRounds(), out = {};
+  for (const k in r) { const x = r[k]; if (!x || !Array.isArray(x.order) || !x.holes || (C && C.courses && !C.courses[x.course])) continue; x.id = x.id || k; out[k] = x; }
+  return out;
 }
-let saveErr = false; // true while localStorage refuses writes (full): the banner warns that scores are not being kept
+let saveErr = false, bootErr = ''; // saveErr: localStorage refuses writes (full); bootErr: the saved round could not be opened. Both show as banners
 function save() { // called after every change (incl. each keystroke in name fields)
   if (!S || S.preview) return;
   try {
     S.updated = Date.now();
-    const r = rounds(); r[S.id] = S;
+    const r = rawRounds(); r[S.id] = S; // write back the whole store, so a round hidden by a stale course.json is not lost
     localStorage.setItem(LS_ROUNDS, JSON.stringify(r));
     localStorage.setItem(LS_KEY, S.id);
     saveErr = false;
@@ -46,7 +47,8 @@ function save() { // called after every change (incl. each keystroke in name fie
 }
 function defaultName() { const d = new Date(); return `${pref.mode === 'scramble' ? 'Scramble' : 'Round'} · ${pref.course} · ${d.toLocaleDateString([], {month: 'short', day: 'numeric'})}`; }
 function resumeRound(id) { const r = rounds()[id]; if (!r) return; S = r; fixTee(S); loadDEM(); viewHole = S.cur; tab = S.ended ? 'card' : 'hole'; save(); requestWake(); render(); fitHole(true); loadWx(true); }
-function deleteRound(id) { const r = rounds(); if (!r[id] || !confirm(`Delete "${r[id].name}" permanently?`)) return; delete r[id]; try { localStorage.setItem(LS_ROUNDS, JSON.stringify(r)); } catch (e) {} if (S && S.id === id) S = null; render(); }
+function deleteRound(id) { const r = rawRounds(); if (!r[id] || !confirm(`Delete "${r[id].name}" permanently?`)) return; delete r[id]; try { localStorage.setItem(LS_ROUNDS, JSON.stringify(r)); } catch (e) {} if (S && S.id === id) S = null; render(); }
+function reopenRound() { if (!S || !S.ended) return; S.ended = null; tab = 'hole'; viewHole = S.cur; save(); requestWake(); render(); fitHole(true); } // finished too early (mis-tap, scored 18 before playing it)
 function relOf(st, par) { // ± vs par for one hole; the single rule used by the hole screen, scorecard, totals, stats and the saved-round list
   if (!st) return null;
   const c = st.shots.filter(s => !s.g || s.g.counts).length;
@@ -57,8 +59,12 @@ function relOf(st, par) { // ± vs par for one hole; the single rule used by the
 }
 function roundSummary(r) { let rr = 0, thru = 0; (r.order || []).forEach(n => { const st = r.holes[n]; if (!st) return; const v = relOf(st, C.courses[r.course].holes[n - 1].par); if (v != null && (st.done || st.manual)) { rr += v; thru++; } }); return {rr, thru}; }
 function photoKey() { const k = clubOf(course()); return k === 'bc' ? LS_PHOTO : LS_PHOTO + '_' + k; } // pin-sheet photo per club
-function closeRings() { // some hazard outlines arrive open; close them so edge distances include the last side
-  for (const cn in C.courses) for (const h of C.courses[cn].holes) for (const z of h.hz || []) { const p = z.p; if (p.length > 2 && (p[0][0] !== p[p.length - 1][0] || p[0][1] !== p[p.length - 1][1])) p.push(p[0]); }
+function closeRings() { // bunkers and ponds arrive as rings that may lack the closing point: close those. Creek lines (ends far apart) stay open lines; hazardsFrom measures them as lines
+  for (const cn in C.courses) for (const h of C.courses[cn].holes) for (const z of h.hz || []) {
+    const p = z.p; if (!p || p.length < 3) continue; const a = p[0], b = p[p.length - 1];
+    if (a[0] === b[0] && a[1] === b[1]) continue;
+    if (z.t === 'b' || distM(a, b) < 5) p.push(a);
+  }
 }
 function savePref() { try { localStorage.setItem(LS_PREF, JSON.stringify(pref)); } catch (e) {} }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])); }
@@ -176,7 +182,7 @@ async function loadDEM() { // grid of the current club only
   const k = clubOf(course()), m = clubByKey(k).dem;
   if (!m || DEMS[k] || DEM_BUSY[k]) return;
   DEM_BUSY[k] = true;
-  try { const buf = await (await cachedFetch(m.file || 'dem.bin', 5000)).arrayBuffer(); if (m.rows && buf.byteLength !== m.rows * m.cols * 2) throw new Error('size'); DEMS[k] = new Uint16Array(buf); render(); } catch (e) {}
+  try { const buf = await (await cachedFetch(m.file || 'dem.bin', 5000)).arrayBuffer(); if (m.rows && buf.byteLength !== m.rows * m.cols * 2) throw new Error('size'); DEMS[k] = new Uint16Array(buf); render(); } catch (e) { setTimeout(loadDEM, 60e3); } // weak signal: try again in a minute
   DEM_BUSY[k] = false;
 } // a saved grid of another size would read as garbage elevations
 const liveElev = {};
@@ -214,19 +220,22 @@ const WX_TTL = 2 * 60e3; // refresh every 2 minutes
 let wxModel = null, wxObs = null, wxLoading = false;
 // nearest NWS station per club: [id, label, station elevation ft for sea-level -> station pressure]
 // 4th field: take wind from the forecast model at your GPS spot instead (station too far for local wind)
-const WX_STN = {bc: ['KDFW', 'DFW Airport', 597, false], tcc: ['KAFW', 'Fort Worth Alliance', 722, true]}; // station elevations as NWS lists them
+const WX_STN = {bc: ['KDFW', 'DFW Airport', 541, false], tcc: ['KAFW', 'Fort Worth Alliance', 722, true]}; // station elevations as NWS lists them (KDFW 164.9 m, KAFW 220.1 m)
 function wxStn() { return WX_STN[clubOf(course())] || WX_STN.bc; }
+const WX_KEEP = 180 * 60e3, WX_WIND_KEEP = 90 * 60e3; // offline on the course: temperature and pressure age slowly (keep 3 h, shown as aged); wind does not (dropped after 90 min)
 function combineWx() {
   const obsFresh = wxObs && wxObs.stn === wxStn()[0] && Date.now() - wxObs.ts < 40 * 60e3;
   if (wxModel && wxModel.club && wxModel.club !== clubOf(course())) wxModel = null; // another club's forecast
-  if (wxModel && Date.now() - (wxModel.fetchedAt || 0) > 30 * 60e3) wxModel = null; // too old to trust (offline)
-  if (!wxModel && !obsFresh) { wx = null; return; } // nothing current: show no weather rather than stale weather
+  if (wxModel && Date.now() - (wxModel.fetchedAt || 0) > WX_KEEP) wxModel = null; // too old to trust at all
+  if (!wxModel && !obsFresh) { wx = null; return; }
   const cur = obsFresh ? Object.assign({}, wxModel ? wxModel.current : {}, wxObs.current) : Object.assign({}, wxModel.current);
   const modelWind = obsFresh && wxStn()[3] && wxModel && wxModel.current && wxModel.current.wind_speed_10m != null;
   if (modelWind) ['wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m'].forEach(k => { if (wxModel.current[k] != null) cur[k] = wxModel.current[k]; });
   if (obsFresh && wxObs.current.apparent_temperature == null) cur.apparent_temperature = null; // the model's feels-like must not ride along with a measured temperature
   if (cur.apparent_temperature == null) cur.apparent_temperature = cur.temperature_2m;
-  wx = {current: cur, hourly: wxModel && wxModel.hourly, daily: wxModel && wxModel.daily,
+  const age = Date.now() - (obsFresh ? wxObs.fetchedAt : wxModel.fetchedAt || 0);
+  if (age > WX_WIND_KEEP) { cur.wind_speed_10m = 0; cur.wind_gusts_10m = 0; } // old wind is worse than no wind
+  wx = {current: cur, hourly: wxModel && wxModel.hourly, daily: wxModel && wxModel.daily, aged: age > 10 * 60e3, ageMin: Math.round(age / 60e3),
         src: obsFresh ? wxStn()[1] + ' (measured)' + (modelWind ? ' · wind: model at your spot' : '') : 'Open-Meteo model', obsTs: obsFresh ? wxObs.ts : (wxModel && wxModel.ts)};
 }
 async function loadWx(force) {
@@ -303,9 +312,11 @@ function plChips(r) {
 
 /* ---------------- position ---------------- */
 function onCourse(p) { return p && distM(p, greenC(H(1))) < 3000; }
+// how long a fix stays "where I am": the iPhone app only sends a new fix after moving ~3 m, so standing on a tee for minutes is normal there; the browser sends them continuously
+function gpsMaxAge() { return NATIVE ? 600e3 : 120e3; }
 function me() {
   if (manualMe) return manualMe;
-  if (gps && onCourse(gps.p) && Date.now() - gps.ts < 120e3) return gps.p;
+  if (gps && onCourse(gps.p) && Date.now() - gps.ts < gpsMaxAge()) return gps.p;
   return null;
 }
 function onThisHole(n, p) { const h = H(n); return p && (lineDist(p, h.line) < 110 || yds(p, greenC(h)) < h.yds[tee()] + 40); }
@@ -315,9 +326,9 @@ function clubNear(p) { // which club's grounds are you at (within 3 km of a cour
   for (const k in C.clubs) for (const cn of coursesOfClub(k)) { const h = C.courses[cn].holes[0]; if (h && distM(p, greenC(h)) < 3000) return k; }
   return null;
 }
-let autoClubDone = false;
-function autoClub() { // no round going and you're standing at the other club: switch the setup to it once
-  if (S || autoClubDone || !gps) return; const k = clubNear(gps.p);
+let autoClubDone = false; // also set when you pick a club or course yourself: your choice beats the GPS
+function autoClub() { // no round going and you're standing at the other club: switch the setup to it once, on a real fix
+  if (S || autoClubDone || !gps || gps.acc > 100) return; const k = clubNear(gps.p);
   if (k) { autoClubDone = true; if (k !== clubOf(pref.course)) pickClub(k); }
 }
 function posLabel() {
@@ -333,17 +344,21 @@ const NATIVE = !!(window.webkit && window.webkit.messageHandlers && window.webki
 let gpsSrc = 'phone', watchPaired = false, lastNativeState = '';
 function postNative(o) { if (NATIVE) try { window.webkit.messageHandlers.bcgps.postMessage(o); } catch (e) {} }
 window.bcNative = {
-  loc(lat, lon, acc, src) { gps = {p: [lat, lon], acc, ts: Date.now(), src}; gpsErr = ''; autoClub(); trackHoleByGPS(); liveUpdate(); },
+  loc(lat, lon, acc, src) {
+    if (acc > 50 && gps && gps.acc <= 50 && Date.now() - gps.ts < 120e3) return; // the phone's coarse fallback must not replace a good recent (Watch) fix
+    gps = {p: [lat, lon], acc, ts: Date.now(), src}; gpsErr = ''; autoClub(); trackHoleByGPS(); liveUpdate();
+  },
   setSource(s, paired) { gpsSrc = s; watchPaired = !!paired; liveUpdate(); },
   err(msg) { gpsErr = msg; liveUpdate(); },
   cmd(name, n) { // one-tap actions from the Watch (n = hole shown on the watch) and the lock screen
     if (!S || !S.started || S.ended) return;
-    if (name === 'shot') quickShot(n);
+    const hole = n >= 1 && n <= 18 && S.order.includes(n) ? n : S.cur; // the Watch's hole only if it is part of this round
+    if (name === 'shot') quickShot(hole);
     else if (name === 'next') advanceFrom(S.cur);
-    else if (name === 'undo') { // last shot on this hole, or on the previous hole if this one has none yet
-      const i = S.order.indexOf(S.cur), prev = i > 0 ? S.order[i - 1] : null;
-      const st = hs(S.cur).shots.length || !prev ? hs(S.cur) : hs(prev);
-      if (st.shots.length) { st.shots.pop(); st.manual = false; save(); render(); }
+    else if (name === 'undo') { // last shot on that hole; or on the hole just left, when it has none and the advance was less than a minute ago (a tap right after auto-advance)
+      const i = S.order.indexOf(hole), prev = i > 0 ? S.order[i - 1] : null, ps = prev ? S.holes[prev] : null;
+      const st = hs(hole).shots.length || !ps || !(Date.now() - (ps.endTs || 0) < 60e3) ? hs(hole) : ps;
+      if (st.shots.length) { st.shots.pop(); st.manual = false; st.adj = null; save(); render(); }
     }
   }
 };
@@ -480,6 +495,7 @@ function logShot(n, player, type, gimmick) {
   const s = {p: player, ts: Date.now(), pos: pos || null, t: type || null};
   if (gimmick) s.g = gimmick;
   if (!s.t && !gimmick) s.t = shotType(n, st.shots.length);
+  if (n === viewHole) target = null; // the ball has moved: a target tapped for the last shot is stale
   st.shots.push(s); save(); render();
 }
 function shotDist(n, i) { // {txt} distance this shot travelled: start (tee / previous ball) → where you logged it
@@ -495,7 +511,7 @@ function shotDist(n, i) { // {txt} distance this shot travelled: start (tee / pr
 }
 function completeHole() {
   const n = viewHole, st = hs(n);
-  st.done = true; st.endTs = st.endTs || Date.now(); if (!st.startTs) st.startTs = S.started;
+  st.done = true; st.endTs = st.endTs || Date.now(); if (!st.startTs) st.startTs = S.started; if (S.pendingScore === n) S.pendingScore = null;
   if (!counted(st) && st.adj == null) st.adj = 0;
   if (n !== S.cur) { save(); render(); return; } // scoring a hole you browsed to: record it, but the round stays where it is
   const i = S.order.indexOf(n);
@@ -523,7 +539,7 @@ function advanceFrom(prev) { // move to the next hole, then ask for the score of
   if (pendingScore && !$('#modal').innerHTML) scorePrompt(pendingScore);
 }
 function scorePrompt(n) {
-  pendingScore = null; S.pendingScore = null; const st = hs(n), h = H(n), c = counted(st), cur = rel(n);
+  pendingScore = null; const st = hs(n), h = H(n), c = counted(st), cur = rel(n); // S.pendingScore stays until a score is entered: "Later" leaves a reminder banner
   const guess = c || (cur != null ? h.par + cur : h.par);
   const lbl = r => r <= -2 ? 'Eagle' : r === -1 ? 'Birdie' : r === 0 ? 'Par' : r === 1 ? 'Bogey' : r === 2 ? 'Double' : '+' + r;
   const opts = []; for (let k = Math.max(1, h.par - 2); k <= h.par + 3; k++) opts.push(k);
@@ -545,7 +561,12 @@ function goBackTo(n) { // advanced by mistake: undo what the advance wrote, so h
   const st = hs(n); st.done = false; delete st.endTs; delete st.gpsOut; // still playing this one
   S.cur = n; viewHole = n; target = null; S.gpsHole = n; gpsCand = null; pendingScore = null; S.pendingScore = null; save(); closeModal(); render(); fitHole(true);
 }
-function quickShot(n) { if (S && S.started && !S.ended && !S.preview) logShot(n >= 1 && n <= 18 ? n : S.cur, null); }
+function quickShot(n) { // one-tap stroke from the Watch or lock screen; a hole outside this round, or one already finished and not current, is ignored
+  if (!S || !S.started || S.ended || S.preview) return;
+  const h = n >= 1 && n <= 18 && S.order.includes(n) ? n : S.cur;
+  if (h !== S.cur && S.holes[h] && S.holes[h].done) return;
+  logShot(h, null);
+}
 
 /* ---------------- dictation ---------------- */
 const NUMW = {one: 1, two: 2, to: 2, too: 2, three: 3, four: 4, five: 5, 2: 2, 3: 3, 4: 4, 5: 5, a: 1, single: 1}; // "to/too putts" is how speech-to-text hears "two putts"
@@ -778,7 +799,7 @@ function drawMap() {
 /* ---------------- hazards ---------------- */
 function layupInfo(from, n) {
   const h = H(n), pin = pinOf(n), D = yds(from, pin), L0 = pref.layup || 100, out = {};
-  if (D > L0 + 40) { const lp = along(backLine(h), L0 / YD); if (yds(from, lp) > 30) out.layup = {p: lp, leave: L0, d: yds(from, lp), pl: playsLike(from, lp).total}; }
+  if (h.par > 3 && D > L0 + 40) { const lp = along(backLine(h), L0 / YD); if (yds(from, lp) > 30) out.layup = {p: lp, leave: L0, d: yds(from, lp), pl: playsLike(from, lp).total}; } // nobody lays up on a par 3
   const l = h.line, v0 = xy(pin, from), Lv = Math.hypot(v0[0], v0[1]) || 1;
   for (let i = 1; i < l.length - 1; i++) {
     const b1 = bearing(l[i - 1], l[i]), b2 = bearing(l[i], l[i + 1]); let turn = ((b2 - b1 + 540) % 360) - 180;
@@ -887,6 +908,11 @@ function renderHeader() {
 function renderBanner() {
   let html = '';
   if (saveErr) html += `<div class="banner" style="background:var(--bad);color:#fff"><span style="flex:1">⚠️ Phone storage is full — scores are NOT being saved. Delete old rounds or the pin photo.</span></div>`;
+  if (bootErr) html += `<div class="banner"><span style="flex:1">${esc(bootErr)}</span><button class="sm" onclick="bootErr='';render()">✕</button></div>`;
+  if (S && S.started && !S.ended && !$('#modal').innerHTML) { // every hole already left behind with no score: the first one gets the reminder
+    const i = S.order.indexOf(S.cur), miss = S.order.slice(0, Math.max(0, i)).filter(n => { const st = S.holes[n]; return !st || (!st.done && !st.manual); });
+    if (miss.length) html += `<div class="banner"><span style="flex:1">Hole ${miss[0]} has no score yet${miss.length > 1 ? ' (+' + (miss.length - 1) + ' more)' : ''}</span><button class="sm" onclick="scorePrompt(${miss[0]})">Enter</button></div>`;
+  }
   if (S && S.started && !S.ended && S.gpsHole && S.gpsHole !== S.cur && !(S.holes[S.gpsHole] || {}).done && gps && onCourse(gps.p)) {
     html += `<div class="banner"><span style="flex:1">GPS says you're on hole ${S.gpsHole}</span><button class="sm" onclick="goHole(${S.gpsHole},true)">Switch</button><button class="sm" onclick="S.gpsHole=S.cur;save();render()">✕</button></div>`;
   }
@@ -899,10 +925,20 @@ function liveHtml(part) {
   const n = viewHole, h = H(n), st = hs(n), from = posFor(n), pin = pinOf(n);
   const fb = (() => { const hits = rayHits(from, pin, h.green); if (inside(from, h.green)) return {f: 0, b: polyFar(from, h.green) * YD}; if (hits.length >= 2) return {f: hits[0] * YD, b: hits[hits.length - 1] * YD}; return {f: polyNear(from, h.green) * YD, b: polyFar(from, h.green) * YD}; })();
   const pl = playsLike(from, pin), mid = yds(from, pin);
-  const gpsOn = !manualMe && gps && onCourse(gps.p) && onThisHole(n, gps.p) && Date.now() - gps.ts < 120e3;
-  if (part === 'top') return (NATIVE ? `<div class="row" style="padding:6px 12px 0;gap:6px"><span class="small mut" style="flex:0 0 auto">GPS source</span><button class="sm ${gpsSrc === 'phone' ? 'on' : ''}" onclick="setGpsSource('phone')">📱 Phone</button><button class="sm ${gpsSrc === 'watch' ? 'on' : ''}" onclick="setGpsSource('watch')">⌚ Watch${watchPaired ? '' : ' (not linked)'}</button></div>` : '') + `  <div class="dist big" style="margin-top:6px"><div class="mid"><div class="lab">${gpsOn ? '<span class="liveDot"></span>Live distance' : 'Distance'} to ${st.pin ? 'pin' : 'middle'}</div><div class="num">${Math.round(mid)}</div><div class="small mut">yards</div></div>
-    <div class="pls"><div class="lab">Plays like</div><div class="num">${Math.round(pl.total)}</div><div class="small mut">${pl.dh != null ? (pl.dh >= 0 ? '▲' : '▼') + Math.abs(Math.round(pl.dh)) + ' ft · ' : ''}${wx ? 'wind ' + (pl.head > 2 ? 'into' : pl.head < -2 ? 'helping' : 'cross') : 'weather loading'}</div></div></div>
-`; // the big numbers need none of the hazard / layup / weather work below
+  const gpsOn = !manualMe && gps && onCourse(gps.p) && onThisHole(n, gps.p) && Date.now() - gps.ts < gpsMaxAge();
+  const hz = hazardsFrom(from, h);
+  if (part === 'top') {
+    // the big card says plainly where its number is measured from: a live fix, a spot you tapped, or the tee because GPS is missing, stale or on another hole
+    const noFix = !!(S && S.started && !gpsOn && !manualMe);
+    const lab = gpsOn ? '<span class="liveDot"></span>Live distance' : manualMe ? 'From your tapped spot' : 'From the tee · ' + (!gps ? 'no GPS' : Date.now() - gps.ts >= gpsMaxAge() ? 'GPS stale' : 'other hole');
+    const wxTxt = wx ? (wx.aged ? `weather ${wx.ageMin}m old` : 'wind ' + (pl.head > 2 ? 'into' : pl.head < -2 ? 'helping' : 'cross')) : (wxErr ? 'no weather · slope only' : 'weather loading');
+    const z = hz[0], hzTxt = z ? ` · ${z.t === 'b' ? '🟨' : '🟦'} <b>${Math.round(z.reach)}</b>${z.carry != null ? '/' + Math.round(z.carry) : ''}` : '';
+    const tgt = target ? `<div class="strip aim"><span>🎯 to target <b>${Math.round(yds(from, target))}</b> · then <b>${Math.round(yds(target, pin))}</b> to the pin</span><button class="sm" onclick="target=null;render()">✕</button></div>` : '';
+    return (NATIVE ? `<div class="row" style="padding:6px 12px 0;gap:6px"><span class="small mut" style="flex:0 0 auto">GPS source</span><button class="sm ${gpsSrc === 'phone' ? 'on' : ''}" onclick="setGpsSource('phone')">📱 Phone</button><button class="sm ${gpsSrc === 'watch' ? 'on' : ''}" onclick="setGpsSource('watch')">⌚ Watch${watchPaired ? '' : ' (not linked)'}</button></div>` : '') + `  <div class="dist big ${noFix ? 'nogps' : ''}" style="margin-top:6px"><div class="mid"><div class="lab">${lab}${noFix ? '' : ' · ' + (st.pin ? 'pin' : 'middle')}</div><div class="num">${Math.round(mid)}</div><div class="small mut">yards</div></div>
+    <div class="pls"><div class="lab">Plays like</div><div class="num">${Math.round(pl.total)}</div><div class="small mut">${pl.dh != null ? (pl.dh >= 0 ? '▲' : '▼') + Math.abs(Math.round(pl.dh)) + ' ft · ' : ''}${wxTxt}</div></div></div>
+  <div class="strip"><span>H${n} · Par ${h.par} · F <b>${Math.round(fb.f)}</b> · B <b>${Math.round(fb.b)}</b>${hzTxt}</span></div>${tgt}
+`; // the big numbers need none of the layup / weather work below
+  }
   let tgtHtml = '';
   if (target) {
     const a = playsLike(from, target), b = playsLike(target, pin);
@@ -910,7 +946,6 @@ function liveHtml(part) {
       <div><div class="mut small">TARGET → PIN</div><div style="font-size:30px;font-weight:800">${Math.round(b.d)}<span class="small mut"> yd</span></div><div class="warnTxt" style="font-weight:700">plays ${Math.round(b.total)}</div></div>
       <button class="sm" style="flex:0" onclick="target=null;render()">✕</button></div><div class="chips">${plChips(a)}</div></div>`;
   }
-  const hz = hazardsFrom(from, h);
   const c = wx && wx.current;
   const wxHtml = c ? (() => { const rel = c.wind_direction_10m - bearing(from, pin) + 180; return `<span class="chip">🌡 <b>${Math.round(c.temperature_2m)}°</b></span><span class="chip">💨 <b>${Math.round(c.wind_speed_10m)}</b> mph ${compass(c.wind_direction_10m)} (gust ${Math.round(c.wind_gusts_10m)}) <span class="windArrow" style="transform:rotate(${rel}deg)">⬆</span> ${pl.head > 2 ? '<b>into</b>' : pl.head < -2 ? '<b>helping</b>' : 'cross'}</span><span class="chip">💧 ${c.relative_humidity_2m}%</span><span class="chip">${Math.round(c.surface_pressure)} hPa</span><span class="chip">🔄 ${wxAge()}</span>`; })() : `<span class="chip">${wxErr || 'loading weather…'}</span>`;
   return `  <div class="small mut" style="padding:4px 12px">${posLabel()}${tapMode !== 'target' ? ` — <b class="warnTxt">tap the map to place ${tapMode === 'pin' ? 'the pin' : 'yourself'}</b>` : ' — tap map to measure'}</div>
@@ -921,8 +956,8 @@ function liveHtml(part) {
   ${(() => { const li = layupInfo(from, n); if (!li.layup && !li.corner) return ''; return `<div class="card">${li.corner ? `<div class="hz"><span>↪️ Dogleg ${li.corner.dir} — to the corner</span><span><b>${Math.round(li.corner.d)}</b> <span class="warnTxt">(${Math.round(li.corner.pl)})</span></span></div><div class="small mut" style="margin:-4px 0 4px">${Math.round(li.corner.toPin)} from the corner to the pin</div>` : ''}${li.layup ? `<div class="hz"><span>🎯 Lay up to leave ${li.layup.leave}</span><span><b>${Math.round(li.layup.d)}</b> <span class="warnTxt">(${Math.round(li.layup.pl)})</span></span></div>` : ''}</div>`; })()}
   ${hz.length ? `<div class="card"><div class="mut small" style="margin-bottom:2px">HAZARDS WITHIN 300 — reach / carry <span class="warnTxt">(plays like)</span></div>${hz.map(z => `<div class="hz"><span>${z.t === 'b' ? '🟨' : '🟦'} ${z.name}</span><span><b>${Math.round(z.reach)}</b> <span class="warnTxt">(${Math.round(z.reachPl)})</span> <span class="k">/</span> ${z.carry != null ? `<b>${Math.round(z.carry)}</b> <span class="warnTxt">(${Math.round(z.carryPl)})</span>` : '<span class="mut">—</span>'}</span></div>`).join('')}</div>` : ''}
   ${h.note ? `<div class="card small">📝 ${esc(h.note)}</div>` : ''}
-  ${greenView(n, posFor(n))}
-`;
+  ${mid <= 60 ? greenView(n, posFor(n)) : ''}
+`; // the green-slope picture only matters from inside ~60 yd; from the tee it just pushes the shot buttons down
 }
 let lastLiveHtml = '', lastTopHtml = '';
 function liveUpdate() { // called on every GPS fix: refresh numbers + map overlays, keep the rest of the screen untouched
@@ -963,7 +998,10 @@ function renderHole() {
     <div class="row"><b style="flex:2">${S.mode === 'scramble' ? '👥 Team shots' : 'Shots'} · Hole ${n}</b><button class="sm" onclick="startDictation()">🎙 Dictate</button>${S.mode === 'scramble' ? '<button class="sm" onclick="gimmickSheet()">🎲 Gimmick</button>' : ''}</div>
     ${players}
     <div style="margin-top:8px">${shots || '<div class="mut small">No shots yet. After each shot, walk or drive to the ball you are playing next, then tap whose shot it was — the distance is measured from the tee or the last ball.</div>'}</div>
-    <div class="score"><button class="pm" onclick="bump(-1)">−</button><div class="val"><div class="rel ${relCls(r)}">${r == null ? 'E' : relStr(r)}</div><div class="small mut">${r != null ? (h.par + r) + ' strokes' : 'tap ± to override'}${st.manual && counted(st) ? ' · <span class="warnTxt">override (' + counted(st) + ' logged)</span>' : ''}</div></div><button class="pm" onclick="bump(1)">+</button></div>
+    ${(() => { const live = !st.done && !st.manual, c = counted(st); // mid-hole: strokes so far, not a ± that reads like a final score
+      const big = live ? (c ? String(c) : '—') : (r == null ? 'E' : relStr(r));
+      const sub = live ? (c ? `stroke${c > 1 ? 's' : ''} so far · par ${h.par} · tap ± to set the score` : 'no strokes yet · tap ± to set the score') : `${h.par + r} strokes${st.manual && c ? ' · <span class="warnTxt">override (' + c + ' logged)</span>' : ''}`;
+      return `<div class="score"><button class="pm" onclick="bump(-1)">−</button><div class="val"><div class="rel ${live ? '' : relCls(r)}">${big}</div><div class="small mut">${sub}</div></div><button class="pm" onclick="bump(1)">+</button></div>`; })()}
     ${(() => { const s = holeStats(S, n) || {putts: 0, gir: null, fir: null}; const b = (on, txt, fn) => `<button class="sm ${on ? 'on' : ''}" onclick="${fn}">${txt}</button>`;
       return `<div style="margin-top:10px;font-size:16px">${h.par >= 4 ? `<div class="row" style="margin-bottom:6px"><span style="flex:0 0 74px">Fairway</span>${b(s.fir === 'L', '⬅ Left', `setStat(${n},'fir','L')`)}${b(s.fir === 'hit', '✓ Hit', `setStat(${n},'fir','hit')`)}${b(s.fir === 'R', 'Right ➡', `setStat(${n},'fir','R')`)}</div>` : ''}
         <div class="row" style="margin-bottom:6px"><span style="flex:0 0 74px">Green in reg</span>${b(s.gir === true, '✓ Yes', `setStat(${n},'gir',true)`)}${b(s.gir === false, '✗ No', `setStat(${n},'gir',false)`)}</div>
@@ -982,7 +1020,7 @@ function renderHole() {
   drawMap();
   if (fresh) setTimeout(() => { if (map) { map.invalidateSize(); fitHole(true); } }, 80);
 }
-function bump(d) { const n = viewHole, st = hs(n); const base = rel(n) != null ? rel(n) : 0; st.adj = base + d; st.manual = true; save(); render(); }
+function bump(d) { const n = viewHole, st = hs(n); const base = rel(n) != null ? rel(n) : 0; st.adj = base + d; st.manual = true; if (S.pendingScore === n) S.pendingScore = null; save(); render(); }
 function delShot(n, i) { const st = hs(n); st.shots.splice(i, 1); st.manual = false; st.adj = null; save(); render(); } // no stale ± left behind to show as a score
 function gimme() { // counted stroke, credited to no one, then close the hole
   const n = viewHole, st = hs(n); st.manual = false;
@@ -1025,6 +1063,7 @@ function renderSetup() {
 }
 function setCourse(cn) { // callers re-render; switching club loads that club's elevation grid
   const was = clubOf(pref.course);
+  autoClubDone = true; // a club or course you chose is not undone by the first GPS fix
   pref.course = cn; pref.tee = validTee(cn, pref.tee); savePref(); loadDEM();
   if (clubOf(cn) !== was) { wx = null; wxModel = null; wxLoading = false; loadWx(true); } // new club: its own weather
 }
@@ -1106,8 +1145,8 @@ function renderCard() {
       ${past.length ? `<div style="margin-top:10px"><b>Trend — last ${past.length} round${past.length > 1 ? 's' : ''}</b><table style="margin-top:4px"><tr><th class="l">Date</th><th>Score</th><th>FIR</th><th>GIR</th><th>Putts/18</th></tr>${past.map(x => `<tr><td class="l">${new Date(x.r.started).toLocaleDateString([], {month: 'short', day: 'numeric'})}</td><td class="${relCls(x.s.rel)}">${relStr(x.s.rel)} <span class="mut small">(${x.s.thru})</span></td><td>${pct(x.s.fh, x.s.ft)}</td><td>${pct(x.s.gh, x.s.gt)}</td><td>${(x.s.putts / Math.max(1, x.s.ph) * 18).toFixed(0)}</td></tr>`).join('')}</table></div>` : ''}</div>`; })()}
   ${use}
   <div class="card" style="padding:6px"><div class="small mut" style="padding:4px 6px">All tees — your hole (${S.cur}) and tee (${S.tee}) highlighted</div>${scorecardTable(S.course, S.tee, S.ended ? null : S.cur, false)}</div>
-  ${S.ended ? '' : `<div class="card"><b>Starting hole</b> <span class="small mut">(shotgun) — currently #${S.order[0]}</span>${startGrid('setStart(N)', S.order[0])}</div>`}
-  <div class="card row"><button onclick="shareCard()">📤 Share card</button><button onclick="endRound()" style="background:#5a2620">Finish / new round</button></div>`;
+  ${S.ended || Object.values(S.holes).some(x => x.done) ? '' : `<div class="card"><b>Starting hole</b> <span class="small mut">(shotgun) — currently #${S.order[0]}; can be changed until the first hole is scored</span>${startGrid('setStart(N)', S.order[0])}</div>`}
+  <div class="card row"><button onclick="shareCard()">📤 Share card</button>${S.ended ? `<button onclick="reopenRound()">↩ Reopen round</button>` : `<button onclick="endRound()" style="background:#5a2620">Finish round</button>`}</div>`;
 }
 function shareCard() {
   const t = totals();
@@ -1163,14 +1202,13 @@ function renderInfo() {
     ${c ? `<div style="font-size:22px;font-weight:800;margin:4px 0">${Math.round(c.temperature_2m)}°F · wind ${Math.round(c.wind_speed_10m)} mph ${compass(c.wind_direction_10m)}, gusts ${Math.round(c.wind_gusts_10m)}</div>
     <div class="small mut">Feels ${Math.round(c.apparent_temperature)}° · humidity ${c.relative_humidity_2m}% · pressure ${Math.round(c.surface_pressure)} hPa · air density ${((rho / RHO0 - 1) * 100).toFixed(1)}% vs. standard (70°F, sea level) → ball flies about ${Math.abs((rho / RHO0 - 1) * 55).toFixed(1)}% ${rho > RHO0 ? 'shorter' : 'farther'}${wx.daily ? ' · sunrise ' + wx.daily.sunrise[0].slice(11) : ''}</div>${hourly}` : `<div class="mut">${wxErr || 'Loading…'}</div>`}</div>
   <div class="card small"><b>How "plays like" is calculated</b><br>
-    • <b>Slope:</b> elevation at you vs. the target from USGS 1-meter lidar; 1 yd per 3 ft uphill (≈0.9 downhill).<br>
+    • <b>Slope:</b> elevation at you vs. the target from USGS lidar (1 m grid on the greens, 5 m elsewhere); 1 yd per 3 ft uphill (≈0.9 downhill).<br>
     • <b>Wind:</b> live wind vs. your shot line: +1% per mph into, −0.5% per mph helping, crosswind gives an aim-off. Scaled down for short shots.<br>
     • <b>Air:</b> temperature, humidity and barometric pressure → air density (≈0.55% distance per 1% density).<br>
     These are standard rules of thumb (like a slope rangefinder plus weather), not a launch monitor. Trust your eyes on gusty days.</div>
   ${infoCard}
   <div class="card"><b>Auto-advance holes</b> <span class="small mut">When you walk to the next tee, move to that hole and ask for the score of the one you just finished.</span><div class="row" style="margin-top:6px"><button class="${pref.autoAdv !== false ? 'on' : ''}" onclick="pref.autoAdv=pref.autoAdv===false;savePref();render()">${pref.autoAdv !== false ? '✅ On' : 'Off'}</button></div></div>
   <div class="card"><b>Offline maps</b> <span class="small mut">Save the satellite map on this phone so holes load instantly and work with no signal.</span><div class="row" style="margin-top:6px"><button class="sm" onclick="downloadOffline()">⬇️ Save maps offline</button><span class="small mut" id="offStat">${offlineStatus()}</span></div></div>
-  <div class="card row">${S ? `<button onclick="endRound()" style="background:#5a2620">Finish / new round</button>` : ''}<button onclick="requestWake();alert(wakeLock?'Screen will stay on':'Screen-on not supported here')">☀️ Keep screen on</button></div>
   <div class="card"><b>Favorite layup distance</b><div class="small mut">Used for the "lay up to leave ___" number.</div><div class="row" style="margin-top:6px">${[60, 80, 100, 120, 140].map(v => `<button class="${(pref.layup || 100) === v ? 'on' : ''}" onclick="pref.layup=${v};savePref();render()">${v}</button>`).join('')}</div></div>
   <div class="card small mut">Map: Esri World Imagery · Hole/green/bunker shapes © OpenStreetMap contributors · Elevation: USGS 3DEP lidar (5 m grid) · Weather: Open-Meteo · Scorecard: GolfPass · Rating/slope: 18Birdies (men's; W = women's). Hole shapes are community-mapped; if a green looks off, drop the pin by tapping it.</div>`;
 }
@@ -1182,6 +1220,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 /* ---------------- manual update ---------------- */
 async function forceUpdate() {
+  if (!confirm('Reload the app from the server? Your round is saved first.')) return; // top-right button: a mis-tap must not wipe the caches
   if (!navigator.onLine) { alert('No signal — connect to Wi-Fi or cellular to update the app.'); return; }
   const b = $('#updBtn'); if (b) b.textContent = '⏳';
   try { save(); } catch (e) {}
@@ -1210,8 +1249,8 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab =
   if (S) { fixTee(S); viewHole = S.cur; if (S.started && !S.ended) requestWake(); if (S.pendingScore && !hs(S.pendingScore).done) pendingScore = S.pendingScore; }
   loadDEM(); // the club of the round (or of the saved pref)
   startGPS();
-  try { render(); } catch (e) { // a broken saved round must not brick the app
-    console.error(e); S = null; try { localStorage.removeItem(LS_KEY); } catch (e2) {} tab = 'hole'; try { render(); } catch (e3) {}
+  try { render(); } catch (e) { // a broken saved round must not brick the app; it stays in Saved rounds
+    console.error(e); S = null; try { localStorage.removeItem(LS_KEY); } catch (e2) {} tab = 'hole'; bootErr = "Couldn't open your round — resume it from Saved rounds below."; try { render(); } catch (e3) {}
   }
   loadWx();
   setInterval(renderHeader, 5000);
