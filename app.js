@@ -3,7 +3,10 @@
 const $ = s => document.querySelector(s);
 const YD = 1.09361;
 const LS_KEY = 'bcgps_round_v1', LS_PHOTO = 'bcgps_photo_v1', LS_PREF = 'bcgps_pref_v1';
-const TEES = ['Black', 'Blue', 'Silver', 'Red'];
+const TEES = ['Black', 'Blue', 'Silver', 'Red']; // fallback only: courses carry their own tee list (course.json `tees`)
+const TEE_COL = {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33', Copper: '#b87333', White: '#f2f2f2', Gold: '#d4af37', Junior: '#6fbf73'};
+const BC_CLUB = {name: 'Bear Creek Golf Club', short: 'Bear Creek', place: 'DFW Airport, TX', addr: '3500 Bear Creek Ct, DFW Airport, TX', phone: '972-456-3200', courses: ['West', 'East']}; // fallback if course.json has no clubs
+const CLUB_LINKS = {bc: {site: 'https://arcisgolf.com/clubs/bear-creek-golf-club/golf-course', tee: 'https://bearcreektxpp.ezlinksgolf.com/index.html#/preSearch'}}; // club web links (only where known)
 const PACE_MIN = {3: 12, 4: 14, 5: 17}; // target minutes per hole (~4h12m)
 
 let C = null;            // course data
@@ -25,7 +28,11 @@ if (!(pref.start >= 1 && pref.start <= 18)) pref.start = 1;
 
 function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
 const LS_ROUNDS = 'bcgps_rounds_v1';
-function rounds() { return load(LS_ROUNDS) || {}; }
+function rounds() { // saved rounds; skips broken entries (old versions / corrupt storage) so they can't break the screen
+  const r = load(LS_ROUNDS); if (!r || typeof r !== 'object') return {};
+  for (const k in r) { const x = r[k]; if (!x || !Array.isArray(x.order) || !x.holes || (C && C.courses && !C.courses[x.course])) delete r[k]; else x.id = x.id || k; }
+  return r;
+}
 let saveErr = false; // true while localStorage refuses writes (full): the banner warns that scores are not being kept
 function save() { // called after every change (incl. each keystroke in name fields)
   if (!S || S.preview) return;
@@ -38,7 +45,7 @@ function save() { // called after every change (incl. each keystroke in name fie
   } catch (e) { saveErr = true; }
 }
 function defaultName() { const d = new Date(); return `${pref.mode === 'scramble' ? 'Scramble' : 'Round'} · ${pref.course} · ${d.toLocaleDateString([], {month: 'short', day: 'numeric'})}`; }
-function resumeRound(id) { const r = rounds()[id]; if (!r) return; S = r; viewHole = S.cur; tab = S.ended ? 'card' : 'hole'; save(); requestWake(); render(); fitHole(true); loadWx(true); }
+function resumeRound(id) { const r = rounds()[id]; if (!r) return; S = r; fixTee(S); loadDEM(); viewHole = S.cur; tab = S.ended ? 'card' : 'hole'; save(); requestWake(); render(); fitHole(true); loadWx(true); }
 function deleteRound(id) { const r = rounds(); if (!r[id] || !confirm(`Delete "${r[id].name}" permanently?`)) return; delete r[id]; try { localStorage.setItem(LS_ROUNDS, JSON.stringify(r)); } catch (e) {} if (S && S.id === id) S = null; render(); }
 function relOf(st, par) { // ± vs par for one hole; the single rule used by the hole screen, scorecard, totals, stats and the saved-round list
   if (!st) return null;
@@ -49,13 +56,17 @@ function relOf(st, par) { // ± vs par for one hole; the single rule used by the
   return st.done ? 0 : null;
 }
 function roundSummary(r) { let rr = 0, thru = 0; (r.order || []).forEach(n => { const st = r.holes[n]; if (!st) return; const v = relOf(st, C.courses[r.course].holes[n - 1].par); if (v != null && (st.done || st.manual)) { rr += v; thru++; } }); return {rr, thru}; }
+function photoKey() { const k = clubOf(course()); return k === 'bc' ? LS_PHOTO : LS_PHOTO + '_' + k; } // pin-sheet photo per club
+function closeRings() { // some hazard outlines arrive open; close them so edge distances include the last side
+  for (const cn in C.courses) for (const h of C.courses[cn].holes) for (const z of h.hz || []) { const p = z.p; if (p.length > 2 && (p[0][0] !== p[p.length - 1][0] || p[0][1] !== p[p.length - 1][1])) p.push(p[0]); }
+}
 function savePref() { try { localStorage.setItem(LS_PREF, JSON.stringify(pref)); } catch (e) {} }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])); }
 
 /* ---------------- geometry ---------------- */
 const toRad = d => d * Math.PI / 180, toDeg = r => r * 180 / Math.PI;
-function xy(p, o) { return [(p[1] - o[1]) * 111320 * Math.cos(toRad(o[0])), (p[0] - o[0]) * 110540]; }
-function fromXY(v, o) { return [o[0] + v[1] / 110540, o[1] + v[0] / (111320 * Math.cos(toRad(o[0])))]; }
+function xy(p, o) { return [(p[1] - o[1]) * 111320 * Math.cos(toRad(o[0])), (p[0] - o[0]) * 110920]; }
+function fromXY(v, o) { return [o[0] + v[1] / 110920, o[1] + v[0] / (111320 * Math.cos(toRad(o[0])))]; }
 function distM(a, b) { const v = xy(b, a); return Math.hypot(v[0], v[1]); }
 function yds(a, b) { return distM(a, b) * YD; }
 function bearing(a, b) { const v = xy(b, a); return (toDeg(Math.atan2(v[0], v[1])) + 360) % 360; }
@@ -115,7 +126,18 @@ function along(l, metersFromStart) { // point along polyline
 function holes() { return C.courses[S ? S.course : pref.course].holes; }
 function H(n) { return holes()[n - 1]; }
 function course() { return S ? S.course : pref.course; }
-function tee() { return S ? S.tee : pref.tee; }
+function clubOf(cn) { const c = C && C.courses[cn]; return (c && c.club) || 'bc'; } // old course data without `club` = Bear Creek
+function clubByKey(k) { const cs = C && C.clubs; if (cs && cs[k]) return cs[k]; return Object.assign({}, BC_CLUB, {dem: C && C.dem}); }
+function club() { return clubByKey(clubOf(course())); } // the club of the current course
+function teesOf(cn) { const c = C && C.courses[cn]; return (c && Array.isArray(c.tees) && c.tees.length) ? c.tees : TEES; }
+function validTee(cn, t) { const ts = teesOf(cn); return ts.includes(t) ? t : ts[Math.floor(ts.length / 2)]; } // tee not on this course → its middle tee
+function tee() { return validTee(course(), S ? S.tee : pref.tee); }
+function fixTee(r) { r.tee = validTee(r.course, r.tee); }
+function coursesOfClub(k) {
+  const all = Object.keys(C.courses).filter(cn => clubOf(cn) === k);
+  const listed = (clubByKey(k).courses || []).filter(cn => C.courses[cn]);
+  return listed.length ? listed : all;
+}
 function greenC(h) { return h._gc || (h._gc = centroid(h.green)); }
 function backLine(h) { // from green center back toward tee, extended
   if (h._bl) return h._bl;
@@ -141,7 +163,7 @@ function pinFromDepth(h, depthYd, latYd) {
 }
 
 /* ---------------- elevation (USGS 3DEP 1 m lidar grid + live fallback) ---------------- */
-let DEM = null;
+const DEMS = {}, DEM_BUSY = {}; // one elevation grid per club, loaded when that club is first used
 async function cachedFetch(url, ms) { // network first, but if it is slow (weak signal) use the copy saved on this phone
   let c = null; try { c = await caches.open('bcgps-data'); } catch (e) {}
   const net = fetch(url).then(async r => { if (!r.ok) throw new Error('bad'); if (c) { try { await c.put(url, r.clone()); } catch (e) {} } return r; });
@@ -150,7 +172,13 @@ async function cachedFetch(url, ms) { // network first, but if it is slow (weak 
   if (!hit) return net;
   return Promise.race([net, new Promise((_, rej) => setTimeout(rej, ms || 3000))]).catch(() => hit);
 }
-async function loadDEM() { try { const buf = await (await cachedFetch('dem.bin', 5000)).arrayBuffer(); if (C && C.dem && buf.byteLength !== C.dem.rows * C.dem.cols * 2) return; DEM = new Uint16Array(buf); render(); } catch (e) {} } // a saved dem.bin from another grid size would read as garbage elevations
+async function loadDEM() { // grid of the current club only
+  const k = clubOf(course()), m = clubByKey(k).dem;
+  if (!m || DEMS[k] || DEM_BUSY[k]) return;
+  DEM_BUSY[k] = true;
+  try { const buf = await (await cachedFetch(m.file || 'dem.bin', 5000)).arrayBuffer(); if (m.rows && buf.byteLength !== m.rows * m.cols * 2) throw new Error('size'); DEMS[k] = new Uint16Array(buf); render(); } catch (e) {}
+  DEM_BUSY[k] = false;
+} // a saved grid of another size would read as garbage elevations
 const liveElev = {};
 function greenGridAt(p) { // feet, from the 1 m lidar grid of whichever green p is on
   for (const cn in C.courses) for (const h of C.courses[cn].holes) {
@@ -165,11 +193,11 @@ function greenGridAt(p) { // feet, from the 1 m lidar grid of whichever green p 
 function elevAt(p) { // feet
   if (!p) return null;
   const gg = greenGridAt(p); if (gg != null) return gg;
-  const m = C.dem;
-  if (DEM && p[0] <= m.n && p[0] >= m.s && p[1] >= m.w && p[1] <= m.e) {
+  const k = clubOf(course()), m = clubByKey(k).dem, D = DEMS[k];
+  if (D && m && p[0] <= m.n && p[0] >= m.s && p[1] >= m.w && p[1] <= m.e) {
     const r = (m.n - p[0]) / (m.n - m.s) * (m.rows - 1), q = (p[1] - m.w) / (m.e - m.w) * (m.cols - 1);
     const r0 = Math.min(m.rows - 2, Math.floor(r)), q0 = Math.min(m.cols - 2, Math.floor(q)), fr = r - r0, fq = q - q0;
-    const g = (a, b) => DEM[a * m.cols + b];
+    const g = (a, b) => D[a * m.cols + b];
     const v = g(r0, q0) * (1 - fr) * (1 - fq) + g(r0, q0 + 1) * (1 - fr) * fq + g(r0 + 1, q0) * fr * (1 - fq) + g(r0 + 1, q0 + 1) * fr * fq;
     return (m.base + v * m.scale) * 3.28084;
   }
@@ -184,43 +212,48 @@ function elevAt(p) { // feet
 /* ---------------- weather + plays-like ---------------- */
 const WX_TTL = 2 * 60e3; // refresh every 2 minutes
 let wxModel = null, wxObs = null, wxLoading = false;
+// nearest NWS station per club: [id, label, station elevation ft for sea-level -> station pressure]
+// 4th field: take wind from the forecast model at your GPS spot instead (station too far for local wind)
+const WX_STN = {bc: ['KDFW', 'DFW Airport', 597, false], tcc: ['KAFW', 'Fort Worth Alliance', 722, true]}; // station elevations as NWS lists them
+function wxStn() { return WX_STN[clubOf(course())] || WX_STN.bc; }
 function combineWx() {
-  const obsFresh = wxObs && Date.now() - wxObs.ts < 40 * 60e3;
-  if (!wxModel && !obsFresh) return;
+  const obsFresh = wxObs && wxObs.stn === wxStn()[0] && Date.now() - wxObs.ts < 40 * 60e3;
+  if (wxModel && wxModel.club && wxModel.club !== clubOf(course())) wxModel = null; // another club's forecast
+  if (wxModel && Date.now() - (wxModel.fetchedAt || 0) > 30 * 60e3) wxModel = null; // too old to trust (offline)
+  if (!wxModel && !obsFresh) { wx = null; return; } // nothing current: show no weather rather than stale weather
   const cur = obsFresh ? Object.assign({}, wxModel ? wxModel.current : {}, wxObs.current) : Object.assign({}, wxModel.current);
+  const modelWind = obsFresh && wxStn()[3] && wxModel && wxModel.current && wxModel.current.wind_speed_10m != null;
+  if (modelWind) ['wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m'].forEach(k => { if (wxModel.current[k] != null) cur[k] = wxModel.current[k]; });
   if (obsFresh && wxObs.current.apparent_temperature == null) cur.apparent_temperature = null; // the model's feels-like must not ride along with a measured temperature
   if (cur.apparent_temperature == null) cur.apparent_temperature = cur.temperature_2m;
   wx = {current: cur, hourly: wxModel && wxModel.hourly, daily: wxModel && wxModel.daily,
-        src: obsFresh ? 'DFW Airport (measured)' : 'Open-Meteo model', obsTs: obsFresh ? wxObs.ts : (wxModel && wxModel.ts)};
+        src: obsFresh ? wxStn()[1] + ' (measured)' + (modelWind ? ' · wind: model at your spot' : '') : 'Open-Meteo model', obsTs: obsFresh ? wxObs.ts : (wxModel && wxModel.ts)};
 }
 async function loadWx(force) {
   if (wxLoading || (!force && wx && Date.now() - wxTs < WX_TTL)) return;
+  const wxClub = clubOf(course()); let gotWx = false;
   wxLoading = true; window._wxFetches = (window._wxFetches || 0) + 1;
   const p = me() || greenC(H(1));
   const u = `https://api.open-meteo.com/v1/forecast?latitude=${p[0].toFixed(4)}&longitude=${p[1].toFixed(4)}` +
     `&current=temperature_2m,relative_humidity_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,precipitation` +
     `&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation_probability&daily=sunrise,sunset` +
     `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FChicago&forecast_days=2&_=${Date.now()}`;
-  const got = await Promise.all([
-    fetch(u, {cache: 'no-store'}).then(r => r.json()).then(j => {
-      if (!j.current) return false;
-      // current.time is Chicago local time with no offset; the response carries the offset (CST or CDT), so use it
-      const off = j.utc_offset_seconds != null ? j.utc_offset_seconds : -6 * 3600;
-      j.ts = (new Date(j.current.time + ':00Z').getTime() - off * 1000) || Date.now(); wxModel = j; return true;
-    }).catch(() => false),
+  await Promise.all([
+    fetch(u, {cache: 'no-store'}).then(r => r.json()).then(j => { if (j.current) { const off = j.utc_offset_seconds != null ? j.utc_offset_seconds : -21600, sg = off < 0 ? '-' : '+', a = Math.abs(off); j.ts = new Date(j.current.time + ':00' + sg + String(Math.floor(a / 3600)).padStart(2, '0') + ':' + String(Math.floor(a % 3600 / 60)).padStart(2, '0')).getTime() || Date.now(); j.club = wxClub; j.fetchedAt = Date.now(); if (wxClub === clubOf(course())) { wxModel = j; gotWx = true; } /* a slow reply for the old club is dropped */ } }).catch(() => {}),
     loadNWS()
   ]);
   combineWx();
-  // only a fetch that actually succeeded counts as "checked now"; a dead zone keeps the old data but shows its real age
-  if (wx && got.some(Boolean)) { wxTs = Date.now(); wxErr = ''; } else if (!wx) wxErr = 'weather offline — retrying';
+  const fresh = gotWx || (wxObs && Date.now() - wxObs.fetchedAt < 5e3); // did anything arrive in this call?
+  if (wx && fresh) { wxTs = Date.now(); wxErr = ''; } else wxErr = 'weather offline — retrying';
   wxLoading = false;
   const ae = document.activeElement;
   if (ae && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) { renderHeader(); return; }
   if (S && (tab === 'hole' || tab === 'info')) render(); else if (tab === 'info') render(); else renderHeader();
 }
-async function loadNWS() { // DFW Airport (KDFW) live observation, ~1 mile from the course
+async function loadNWS() { // live observation from the club's nearest NWS station (KDFW for Bear Creek, KAFW for Trophy Club)
+  const [stn, , stnFt] = wxStn();
   try {
-    const p = (await (await fetch('https://api.weather.gov/stations/KDFW/observations/latest', {cache: 'no-store'})).json()).properties;
+    const p = (await (await fetch(`https://api.weather.gov/stations/${stn}/observations/latest`, {cache: 'no-store'})).json()).properties;
     const v = o => o && o.value != null ? o.value : null, mph = x => x == null ? null : x / 1.609;
     const t = v(p.temperature); if (t == null) return false;
     const ws = mph(v(p.windSpeed)) || 0, pr = v(p.barometricPressure);
@@ -228,12 +261,11 @@ async function loadNWS() { // DFW Airport (KDFW) live observation, ~1 mile from 
     const wd = v(p.windDirection), md = wxModel && wxModel.current ? wxModel.current.wind_direction_10m : null;
     const cur = {temperature_2m: t * 9 / 5 + 32, wind_speed_10m: wd == null && md == null ? 0 : ws, wind_direction_10m: wd != null ? wd : (md || 0), wind_gusts_10m: mph(v(p.windGust)) || ws};
     if (v(p.relativeHumidity) != null) cur.relative_humidity_2m = Math.round(v(p.relativeHumidity));
-    if (pr) cur.surface_pressure = pr / 100 - 20; // sea-level → ~560 ft station pressure
+    if (pr) cur.surface_pressure = pr / 100 - stnFt / 27.3; // sea-level → station pressure (~1 hPa per 27 ft)
     if (cur.relative_humidity_2m == null && !(wxModel && wxModel.current)) cur.relative_humidity_2m = 50;
     if (cur.surface_pressure == null && !(wxModel && wxModel.current)) cur.surface_pressure = 995;
-    wxObs = {current: cur, ts: new Date(p.timestamp).getTime()};
-    return true;
-  } catch (e) { return false; }
+    wxObs = {current: cur, ts: new Date(p.timestamp).getTime(), stn, fetchedAt: Date.now()};
+  } catch (e) {}
 }
 function wxAge() { if (!wx) return ''; const s = Math.round((Date.now() - wxTs) / 1000); return `Live · ${wx.src} as of ${fmtClock(wx.obsTs)} · checked ${s < 60 ? s + 's' : Math.round(s / 60) + 'm'} ago`; }
 function airDensity(tF, hPa, rh) { // kg/m3, moist air
@@ -278,10 +310,21 @@ function me() {
 }
 function onThisHole(n, p) { const h = H(n); return p && (lineDist(p, h.line) < 110 || yds(p, greenC(h)) < h.yds[tee()] + 40); }
 function posFor(n) { const m = me(); return m && (manualMe || onThisHole(n, m)) ? m : teePos(H(n)); }
+function clubNear(p) { // which club's grounds are you at (within 3 km of a course's 1st green)?
+  if (!p || !C || !C.clubs) return null;
+  for (const k in C.clubs) for (const cn of coursesOfClub(k)) { const h = C.courses[cn].holes[0]; if (h && distM(p, greenC(h)) < 3000) return k; }
+  return null;
+}
+let autoClubDone = false;
+function autoClub() { // no round going and you're standing at the other club: switch the setup to it once
+  if (S || autoClubDone || !gps) return; const k = clubNear(gps.p);
+  if (k) { autoClubDone = true; if (k !== clubOf(pref.course)) pickClub(k); }
+}
 function posLabel() {
   if (manualMe) return '📍 Manual position (tap 📍 Me again → GPS)';
   if (gps && onCourse(gps.p) && !onThisHole(viewHole, gps.p)) return `🛰 You're not on this hole — showing from the ${tee()} tee`;
   if (gps && onCourse(gps.p)) return `<span class="liveDot"></span><b style="color:var(--acc)">LIVE ${gps.src === 'watch' ? '⌚ WATCH' : NATIVE ? '📱 PHONE' : ''} GPS</b> ±${Math.round(gps.acc * YD)} yd · ${Math.max(0, Math.round((Date.now() - gps.ts) / 1000))}s ago` + (gps.acc > 25 ? ' <span class="warnTxt">(weak)</span>' : '');
+  if (gps) { const k = clubNear(gps.p); if (k && k !== clubOf(course())) return `🛰 You're at ${esc(clubByKey(k).short)} — this ${S ? 'round' : 'setup'} is ${esc(club().short)} → showing from the ${tee()} tee`; }
   if (gps) return `🛰 GPS ok but you're off-course → showing from the ${tee()} tee`;
   return `${gpsErr ? '⚠️ ' + esc(gpsErr) + ' — ' : '🛰 waiting for GPS — '}showing from the ${tee()} tee`;
 }
@@ -290,21 +333,25 @@ const NATIVE = !!(window.webkit && window.webkit.messageHandlers && window.webki
 let gpsSrc = 'phone', watchPaired = false, lastNativeState = '';
 function postNative(o) { if (NATIVE) try { window.webkit.messageHandlers.bcgps.postMessage(o); } catch (e) {} }
 window.bcNative = {
-  loc(lat, lon, acc, src) { gps = {p: [lat, lon], acc, ts: Date.now(), src}; gpsErr = ''; trackHoleByGPS(); liveUpdate(); },
+  loc(lat, lon, acc, src) { gps = {p: [lat, lon], acc, ts: Date.now(), src}; gpsErr = ''; autoClub(); trackHoleByGPS(); liveUpdate(); },
   setSource(s, paired) { gpsSrc = s; watchPaired = !!paired; liveUpdate(); },
   err(msg) { gpsErr = msg; liveUpdate(); },
-  cmd(name) { // one-tap actions from the Watch and the lock screen
+  cmd(name, n) { // one-tap actions from the Watch (n = hole shown on the watch) and the lock screen
     if (!S || !S.started || S.ended) return;
-    if (name === 'shot') quickShot();
+    if (name === 'shot') quickShot(n);
     else if (name === 'next') advanceFrom(S.cur);
-    else if (name === 'undo') { const st = hs(S.cur); const i = st.shots.length - 1; if (i >= 0) { st.shots.pop(); save(); render(); } }
+    else if (name === 'undo') { // last shot on this hole, or on the previous hole if this one has none yet
+      const i = S.order.indexOf(S.cur), prev = i > 0 ? S.order[i - 1] : null;
+      const st = hs(S.cur).shots.length || !prev ? hs(S.cur) : hs(prev);
+      if (st.shots.length) { st.shots.pop(); st.manual = false; save(); render(); }
+    }
   }
 };
 function setGpsSource(s) { gpsSrc = s; postNative({type: 'source', value: s}); liveUpdate(); }
 function pushNativeState() { // tell the iPhone app (and through it the Watch) which hole, pin and weather to use
   if (!NATIVE || !C) return;
   const n = viewHole, p = pinOf(n), c = wx && wx.current;
-  const st = {type: 'state', course: course(), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]], pinSet: !!(S && S.holes[n] && S.holes[n].pin), shots: S && S.started && !S.ended && S.holes[S.cur] ? counted(S.holes[S.cur]) : -1, cur: S && S.started && !S.ended ? S.cur : 0};
+  const st = {type: 'state', course: course(), club: clubOf(course()), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]], pinSet: !!(S && S.holes[n] && S.holes[n].pin), shots: S && S.started && !S.ended && S.holes[S.cur] ? counted(S.holes[S.cur]) : -1, cur: S && S.started && !S.ended ? S.cur : 0};
   if (c) st.wx = {t: c.temperature_2m, rh: c.relative_humidity_2m, p: c.surface_pressure, ws: c.wind_speed_10m, wd: c.wind_direction_10m};
   const k = JSON.stringify(st); if (k !== lastNativeState) { lastNativeState = k; postNative(st); }
   try { // yardages for the lock-screen Live Activity (only while a round is on)
@@ -324,7 +371,7 @@ function startGPS() {
   if (!navigator.geolocation) { gpsErr = 'GPS not supported'; return; }
   navigator.geolocation.watchPosition(p => {
     gps = {p: [p.coords.latitude, p.coords.longitude], acc: p.coords.accuracy, ts: Date.now()}; gpsErr = '';
-    trackHoleByGPS();
+    autoClub(); trackHoleByGPS();
     liveUpdate();
   }, e => {
     if (e.code === 1) { gpsErr = 'Location permission denied — enable it for this site in Settings'; render(); return; }
@@ -448,7 +495,7 @@ function shotDist(n, i) { // {txt} distance this shot travelled: start (tee / pr
 }
 function completeHole() {
   const n = viewHole, st = hs(n);
-  st.done = true; st.endTs = Date.now(); if (!st.startTs) st.startTs = S.started;
+  st.done = true; st.endTs = st.endTs || Date.now(); if (!st.startTs) st.startTs = S.started;
   if (!counted(st) && st.adj == null) st.adj = 0;
   if (n !== S.cur) { save(); render(); return; } // scoring a hole you browsed to: record it, but the round stays where it is
   const i = S.order.indexOf(n);
@@ -468,7 +515,7 @@ function advanceFrom(prev) { // move to the next hole, then ask for the score of
   const ns = hs(nx); if (!ns.startTs) ns.startTs = Date.now();
   const ps = hs(prev);
   if (!ps.done) {
-    pendingScore = prev;
+    pendingScore = prev; S.pendingScore = prev;
     // strokes were logged: the hole counts from now on (the prompt can still correct it); "Later" must not drop it from the total
     if (counted(ps)) { ps.done = true; if (!ps.endTs) ps.endTs = Date.now(); if (!ps.startTs) ps.startTs = S.started; }
   }
@@ -476,7 +523,7 @@ function advanceFrom(prev) { // move to the next hole, then ask for the score of
   if (pendingScore && !$('#modal').innerHTML) scorePrompt(pendingScore);
 }
 function scorePrompt(n) {
-  pendingScore = null; const st = hs(n), h = H(n), c = counted(st), cur = rel(n);
+  pendingScore = null; S.pendingScore = null; const st = hs(n), h = H(n), c = counted(st), cur = rel(n);
   const guess = c || (cur != null ? h.par + cur : h.par);
   const lbl = r => r <= -2 ? 'Eagle' : r === -1 ? 'Birdie' : r === 0 ? 'Par' : r === 1 ? 'Bogey' : r === 2 ? 'Double' : '+' + r;
   const opts = []; for (let k = Math.max(1, h.par - 2); k <= h.par + 3; k++) opts.push(k);
@@ -486,6 +533,7 @@ function scorePrompt(n) {
     <div class="row"><button onclick="closeModal()">Later</button><button onclick="goBackTo(${n})">↩ Still on ${n}</button></div>`);
 }
 function setHoleScore(n, k) {
+  if (S.pendingScore === n) S.pendingScore = null;
   const st = hs(n), h = H(n);
   if (k === counted(st)) { st.manual = false; st.adj = null; } else { st.adj = k - h.par; st.manual = true; }
   st.done = true; if (!st.endTs) st.endTs = Date.now(); if (!st.startTs) st.startTs = S.started;
@@ -495,9 +543,9 @@ function goBackTo(n) { // advanced by mistake: undo what the advance wrote, so h
   const nx = S.cur, ns = nx !== n ? S.holes[nx] : null;
   if (ns && !ns.done && !counted(ns)) { delete ns.startTs; delete ns.gpsIn; } // the hole we jumped to never really started
   const st = hs(n); st.done = false; delete st.endTs; delete st.gpsOut; // still playing this one
-  S.cur = n; viewHole = n; target = null; S.gpsHole = n; gpsCand = null; pendingScore = null; save(); closeModal(); render(); fitHole(true);
+  S.cur = n; viewHole = n; target = null; S.gpsHole = n; gpsCand = null; pendingScore = null; S.pendingScore = null; save(); closeModal(); render(); fitHole(true);
 }
-function quickShot() { if (S && S.started && !S.ended && !S.preview) logShot(S.cur, null); }
+function quickShot(n) { if (S && S.started && !S.ended && !S.preview) logShot(n >= 1 && n <= 18 ? n : S.cur, null); }
 
 /* ---------------- dictation ---------------- */
 const NUMW = {one: 1, two: 2, to: 2, too: 2, three: 3, four: 4, five: 5, 2: 2, 3: 3, 4: 4, 5: 5, a: 1, single: 1}; // "to/too putts" is how speech-to-text hears "two putts"
@@ -536,6 +584,7 @@ function parseDictation(text, n) {
 }
 let dictTimer = null, dictRec = null, dictHole = null; // dictHole: the hole the sheet was opened for, so an auto-advance mid-sentence cannot move the shots
 function stopDictRec() { if (dictRec) { try { dictRec.abort(); } catch (e) {} dictRec = null; } }
+function stopDictation() { clearInterval(dictTimer); stopDictRec(); }
 function startDictation() {
   clearInterval(dictTimer); stopDictRec();
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -562,12 +611,12 @@ function previewDictation() {
     : '<div class="mut small">Nothing recognized yet. Use player names + drive / approach / chip / putt / mulligan / string.</div>';
 }
 function openDictateSheet(txt) {
-  dictHole = viewHole;
+  if (!$('#dictTxt')) dictHole = viewHole; // the hole the sheet was opened on, even if GPS moves the round on
   modal(`<h3 style="margin:0 0 6px">🎙 Dictate shots — Hole ${dictHole}</h3>
     <div id="dictStatus" class="small mut"></div>
     <textarea id="dictTxt" rows="3" placeholder="Drew drive, Chris approach, Travis chip, Mike made the putt">${esc(txt)}</textarea>
     <div id="dictPrev" style="margin:8px 0"></div>
-    <div class="row"><button onclick="closeModal()">Cancel</button><button onclick="startDictation()">🎙 Again</button><button class="pri" onclick="applyDictation()">Add</button></div>`);
+    <div class="row"><button onclick="stopDictation();closeModal()">Cancel</button><button onclick="startDictation()">🎙 Again</button><button class="pri" onclick="applyDictation()">Add</button></div>`);
   $('#dictTxt').addEventListener('input', () => { clearInterval(dictTimer); previewDictation(); }); previewDictation();
 }
 function applyDictation() {
@@ -615,7 +664,7 @@ const CachedTiles = L.TileLayer.extend({ // satellite tiles are saved on the pho
 function tileXY(lat, lon, z) { const n = 2 ** z, r = lat * Math.PI / 180; return [Math.floor((lon + 180) / 360 * n), Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n)]; }
 function courseTiles() {
   let a = 90, b = -90, c = 180, d = -180;
-  Object.values(C.courses).forEach(cr => cr.holes.forEach(h => h.line.concat(h.green).forEach(p => { a = Math.min(a, p[0]); b = Math.max(b, p[0]); c = Math.min(c, p[1]); d = Math.max(d, p[1]); })));
+  Object.keys(C.courses).filter(cn => clubOf(cn) === clubOf(course())).forEach(cn => C.courses[cn].holes.forEach(h => h.line.concat(h.green).forEach(p => { a = Math.min(a, p[0]); b = Math.max(b, p[0]); c = Math.min(c, p[1]); d = Math.max(d, p[1]); })));
   a -= .002; b += .002; c -= .0025; d += .0025;
   const out = [];
   for (let z = 15; z <= 19; z++) { const t1 = tileXY(b, c, z), t2 = tileXY(a, d, z); for (let x = t1[0]; x <= t2[0]; x++) for (let y = t1[1]; y <= t2[1]; y++) out.push(TILE_URL.replace('{z}', z).replace('{y}', y).replace('{x}', x)); }
@@ -625,18 +674,19 @@ let offBusy = false;
 async function downloadOffline() {
   if (offBusy) return;
   const list = courseTiles();
-  if (!confirm('Save the satellite map of both courses on this phone (about ' + Math.round(list.length * 0.022) + ' MB, ' + list.length + ' tiles)? Best on Wi-Fi.')) return;
+  if (!confirm('Save the satellite map of ' + club().name + ' on this phone (about ' + Math.round(list.length * 0.022) + ' MB, ' + list.length + ' tiles)? Best on Wi-Fi.')) return;
   offBusy = true; const st = $('#offStat'); let done = 0, fail = 0;
   try {
     const c = await caches.open('bcgps-tiles'); let i = 0;
     const worker = async () => { while (i < list.length) { const u = list[i++]; try { if (!(await c.match(u))) { const r = await fetch(u); if (!r.ok) throw new Error('bad'); await c.put(u, r); } } catch (e) { fail++; } done++; if (st && done % 10 === 0) st.textContent = 'Saving… ' + Math.round(done / list.length * 100) + '%'; } };
     await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
-    if (!fail) { try { localStorage.setItem('bc_offline', String(Date.now())); } catch (e) {} }
+    if (!fail) { try { localStorage.setItem(offKey(clubOf(course())), String(Date.now())); } catch (e) {} }
     if (st) st.textContent = fail ? 'Saved with ' + fail + ' missing tiles — try again on better signal.' : '✅ Saved for offline use.';
   } catch (e) { if (st) st.textContent = 'Could not save maps on this device.'; }
   offBusy = false;
 }
-function offlineStatus() { let t = null; try { t = localStorage.getItem('bc_offline'); } catch (e) {} return t ? '✅ Saved ' + new Date(+t).toLocaleDateString([], {month: 'short', day: 'numeric'}) : 'Not saved yet'; }
+function offKey(k) { return k === 'bc' ? 'bc_offline' : 'bc_offline_' + k; } // Bear Creek keeps its old key
+function offlineStatus() { let t = null; try { t = localStorage.getItem(offKey(clubOf(course()))); } catch (e) {} return t ? '✅ Saved ' + new Date(+t).toLocaleDateString([], {month: 'short', day: 'numeric'}) : 'Not saved yet'; }
 function initMap() {
   if (map) return;
   map = L.map('map', {zoomControl: false, attributionControl: true, tap: true, maxZoom: 21, rotate: true, bearing: 0, touchRotate: false, shiftKeyRotate: false, rotateControl: false, compassBearing: false});
@@ -701,7 +751,7 @@ function drawMap() {
   h.hz.forEach(z => L.polygon(z.p, {color: z.t === 'b' ? '#f3dc9b' : '#58a8ff', weight: 2, fillOpacity: .15, interactive: false}).addTo(layers));
   L.polygon(h.green, {color: '#fff', weight: 2, fillOpacity: .08, interactive: false}).addTo(layers);
   L.polyline(h.line, {color: '#fff', weight: 1.5, dashArray: '4 6', opacity: .7, interactive: false}).addTo(layers);
-  TEES.forEach(t => { const p = teePos(h, t); L.circleMarker(p, {radius: 5, color: '#000', weight: 1, fillColor: {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33'}[t], fillOpacity: 1, interactive: false}).addTo(layers); });
+  teesOf(course()).forEach(t => { const p = teePos(h, t); L.circleMarker(p, {radius: 5, color: '#000', weight: 1, fillColor: TEE_COL[t], fillOpacity: 1, interactive: false}).addTo(layers); });
   [100, 150, 200, 250].forEach(y => { const p = along(backLine(h), y / YD); if (yds(from, greenC(h)) > y + 10) { L.marker(p, {icon: icon('dot'), interactive: false}).addTo(layers); L.marker(p, {icon: icon('lay', y), interactive: false}).addTo(layers); } });
   { const li = layupInfo(from, viewHole);
     if (li.corner) L.circleMarker(li.corner.p, {radius: 7, color: '#fff', weight: 2, fillColor: '#5aa9ef', fillOpacity: .9, interactive: false}).addTo(layers);
@@ -768,7 +818,7 @@ function greenView(n, from) {
   const stp = 4; let arrows = '';
   cells.filter(k => k.r % stp === 1 && k.c % stp === 1 && k.r > 0 && k.c > 0 && k.r < g.rows - 1 && k.c < g.cols - 1).forEach(k => {
     const dzx = (zAt(k.r, k.c + 1) - zAt(k.r, k.c - 1)) / (2 * (g.e - g.w) * 111320 * Math.cos(toRad(gc[0])) / (g.cols - 1));
-    const dzy = (zAt(k.r - 1, k.c) - zAt(k.r + 1, k.c)) / (2 * (g.n - g.s) * 110540 / (g.rows - 1));
+    const dzy = (zAt(k.r - 1, k.c) - zAt(k.r + 1, k.c)) / (2 * (g.n - g.s) * 110920 / (g.rows - 1));
     const sl = Math.hypot(dzx, dzy); if (sl < 0.5) return;
     const v = [-dzx / sl, -dzy / sl], vr = [v[0] * Math.cos(b) - v[1] * Math.sin(b), v[0] * Math.sin(b) + v[1] * Math.cos(b)];
     const q = P(R(k.p)), L1 = Math.min(16, 5 + sl * 3), x2 = +q[0] + vr[0] * L1, y2 = +q[1] - vr[1] * L1;
@@ -943,7 +993,8 @@ function gimme() { // counted stroke, credited to no one, then close the hole
 function startGrid(action, sel) {
   return `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px">${[...Array(18)].map((_, i) => `<button class="sm ${sel === i + 1 ? 'on' : ''}" style="padding:10px 0" onclick="${action.replace('N', i + 1)}">${i + 1}</button>`).join('')}</div>`;
 }
-function setStart(n) { // change starting hole mid-round (keeps everything already logged)
+function setStart(n) { // change starting hole before play (keeps everything already logged)
+  if (Object.values(S.holes).some(h => h.done)) { render(); return; } // rotating the order mid-round would skip holes
   const order = []; for (let i = 0; i < 18; i++) order.push(((n - 1 + i) % 18) + 1);
   S.order = order;
   if (!Object.values(S.holes).some(h => h.done)) { S.cur = n; viewHole = n; const st = hs(n); st.startTs = st.startTs || Date.now(); }
@@ -951,13 +1002,16 @@ function setStart(n) { // change starting hole mid-round (keeps everything alrea
 }
 function renderSetup() {
   killMap();
-  const tees = TEES.map(t => `<option ${t === pref.tee ? 'selected' : ''}>${t}</option>`).join('');
+  const ck = clubOf(pref.course), cks = C.clubs ? Object.keys(C.clubs) : [], tv = validTee(pref.course, pref.tee);
+  const tees = teesOf(pref.course).map(t => `<option ${t === tv ? 'selected' : ''}>${t}</option>`).join('');
+  const clubRow = cks.length ? `<label>Club</label><div class="row">${cks.map(k => `<button class="${ck === k ? 'on' : ''}" onclick="pickClub('${k}')">${esc(clubByKey(k).short)}</button>`).join('')}</div>` : '';
   $('#main').innerHTML = `<div class="card">
-    <h2 style="margin:0 0 4px">New round</h2><div class="mut small">Bear Creek Golf Club · DFW Airport</div>
+    <h2 style="margin:0 0 4px">New round</h2><div class="mut small">${esc(club().name)} · ${esc(club().place)}</div>
     <label>Round name</label><input placeholder="${esc(defaultName())}" value="${esc(pref.roundName || '')}" oninput="pref.roundName=this.value;savePref()">
-    <label>Course</label><div class="row">${['West', 'East'].map(c => `<button class="${pref.course === c ? 'on' : ''}" onclick="pref.course='${c}';savePref();render()">${c}</button>`).join('')}</div>
+    ${clubRow}
+    <label>Course</label><div class="row">${coursesOfClub(ck).map(c => `<button class="${pref.course === c ? 'on' : ''}" onclick="setCourse('${c}');render()">${c}</button>`).join('')}</div>
     <label>Tee box</label><select onchange="pref.tee=this.value;savePref();render()">${tees}</select>
-    <div class="small mut" style="margin-top:4px">${TEES.map(t => `${t}: ${C.courses[pref.course].holes.reduce((a, h) => a + h.yds[t], 0)} yds`).join(' · ')}<br>Rating/slope ${esc(C.courses[pref.course].rating[pref.tee] || '')}</div>
+    <div class="small mut" style="margin-top:4px">${teesOf(pref.course).map(t => `${t}: ${C.courses[pref.course].holes.reduce((a, h) => a + h.yds[t], 0)} yds`).join(' · ')}<br>Rating/slope ${esc(C.courses[pref.course].rating[tv] || '')}</div>
     <label>Format</label><div class="row">${[['scramble', '👥 Scramble (4)'], ['solo', '🙋 Just me']].map(([k, v]) => `<button class="${pref.mode === k ? 'on' : ''}" onclick="pref.mode='${k}';savePref();render()">${v}</button>`).join('')}</div>
     <label>Starting hole — shotgun start? Tap the hole your cart starts on</label>${startGrid('pref.start=N;savePref();render()', pref.start)}
     ${pref.mode === 'scramble' ? `<label>Team (names optional — leave blank to skip)</label>${[0, 1, 2, 3].map(i => `<input style="margin-bottom:6px" placeholder="Golfer ${i + 1}" value="${esc(pref.players[i] || '')}" oninput="pref.players[${i}]=this.value;savePref()">`).join('')}` : ''}
@@ -969,17 +1023,23 @@ function renderSetup() {
       return `<div class="shot"><span class="t"><b>${esc(r.name)}</b><br><span class="small mut">${r.course} · ${r.tee} · ${new Date(r.started).toLocaleDateString([], {month: 'short', day: 'numeric'})} ${fmtClock(r.started)} · ${sm.thru ? relStr(sm.rr) + ' thru ' + sm.thru : 'not started'} · ${r.ended ? '✅ finished' : '<span class="warnTxt">in progress</span>'}</span></span><button class="sm ${r.ended ? '' : 'pri'}" onclick="resumeRound('${r.id}')">${r.ended ? 'Open' : 'Resume'}</button><button class="x" onclick="deleteRound('${r.id}')">🗑</button></div>`; }).join('')}</div>`; })()}
   <div class="card small mut">Tip: open this once on Wi-Fi before the round, then in Safari tap Share → <b>Add to Home Screen</b> so it opens full-screen. Allow location when asked.</div>`;
 }
+function setCourse(cn) { // callers re-render; switching club loads that club's elevation grid
+  const was = clubOf(pref.course);
+  pref.course = cn; pref.tee = validTee(cn, pref.tee); savePref(); loadDEM();
+  if (clubOf(cn) !== was) { wx = null; wxModel = null; wxLoading = false; loadWx(true); } // new club: its own weather
+}
+function pickClub(k) { const cs = coursesOfClub(k); if (cs.length) { setCourse(cs[0]); render(); } }
 function startRound() {
   const order = []; for (let i = 0; i < 18; i++) order.push(((pref.start - 1 + i) % 18) + 1);
   const players = pref.mode === 'scramble' ? pref.players.map(p => (p || '').trim()) : ['Me'];
   if (pref.mode === 'scramble' && !players.some(p => p)) { players[0] = 'Golfer 1'; players[1] = 'Golfer 2'; players[2] = 'Golfer 3'; players[3] = 'Golfer 4'; }
-  S = {id: 'r' + Date.now(), name: (pref.roundName || '').trim() || defaultName(), course: pref.course, tee: pref.tee, mode: pref.mode, players, order, started: Date.now(), cur: order[0], holes: {}};
+  S = {id: 'r' + Date.now(), name: (pref.roundName || '').trim() || defaultName(), course: pref.course, tee: validTee(pref.course, pref.tee), mode: pref.mode, players, order, started: Date.now(), cur: order[0], holes: {}};
   pref.roundName = ''; savePref();
   manualMe = null; gpsCand = null; pendingScore = null; target = null;
   hs(order[0]).startTs = S.started; viewHole = order[0]; tab = 'hole'; save(); requestWake(); render(); loadWx(true);
 }
 function previewCourse() {
-  S = {course: pref.course, tee: pref.tee, mode: pref.mode, players: pref.mode === 'scramble' ? pref.players : ['Me'], order: [...Array(18)].map((_, i) => i + 1), started: null, cur: 1, holes: {}, preview: true};
+  S = {course: pref.course, tee: validTee(pref.course, pref.tee), mode: pref.mode, players: pref.mode === 'scramble' ? pref.players : ['Me'], order: [...Array(18)].map((_, i) => i + 1), started: null, cur: 1, holes: {}, preview: true};
   viewHole = 1; render();
 }
 function endRound() {
@@ -991,27 +1051,28 @@ function endRound() {
 let cardSel = {tee: null, hole: null};
 function toggleSel(k, v) { cardSel[k] = cardSel[k] === v ? null : v; render(); }
 function scorecardTable(cn, selTee, selHole, interactive) {
-  const cr = C.courses[cn], hl = cr.holes;
-  const dot = {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33'};
+  const cr = C.courses[cn], hl = cr.holes, TL = teesOf(cn);
+  const dot = TEE_COL;
   const cell = (n, t) => { const r = n === selHole, c = t === selTee; return r && c ? ' class="x2"' : (r || c) ? ' class="x1"' : ''; };
   const hc = n => interactive ? ` onclick="toggleSel('hole',${n})" style="cursor:pointer"` : '';
   const half = (a, b, lab) => {
     let rows = '';
     for (let n = a; n <= b; n++) { const h = hl[n - 1], r = n === selHole ? ' class="x1"' : '';
-      rows += `<tr><td${r}${hc(n)}><b>${n}</b></td><td${r}>${h.par}</td><td${r}>${h.hcp}</td>${TEES.map(t => `<td${cell(n, t)}>${h.yds[t]}</td>`).join('')}</tr>`; }
+      rows += `<tr><td${r}${hc(n)}><b>${n}</b></td><td${r}>${h.par}</td><td${r}>${h.hcp}</td>${TL.map(t => `<td${cell(n, t)}>${h.yds[t]}</td>`).join('')}</tr>`; }
     const s = hl.slice(a - 1, b);
-    return rows + `<tr><th>${lab}</th><th>${s.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${s.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>`;
+    return rows + `<tr><th>${lab}</th><th>${s.reduce((x, h) => x + h.par, 0)}</th><th></th>${TL.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${s.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>`;
   };
-  return `<table class="sc"><tr><th>#</th><th>Par</th><th>Hcp</th>${TEES.map(t => `<th${t === selTee ? ' class="x1"' : ''}${interactive ? ` onclick="toggleSel('tee','${t}')" style="cursor:pointer"` : ''}><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${dot[t]};border:1px solid #888"></span><br>${t}</th>`).join('')}</tr>
+  return `<table class="sc"><tr><th>#</th><th>Par</th><th>Hcp</th>${TL.map(t => `<th${t === selTee ? ' class="x1"' : ''}${interactive ?` onclick="toggleSel('tee','${t}')" style="cursor:pointer"` : ''}><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${dot[t]};border:1px solid #888"></span><br>${t}</th>`).join('')}</tr>
     ${half(1, 9, 'Out')}${half(10, 18, 'In')}
-    <tr><th>Tot</th><th>${hl.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${hl.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>
-    <tr><td class="small mut">R/S</td><td></td><td></td>${TEES.map(t => `<td class="small mut${t === selTee ? ' x1' : ''}">${esc(cr.rating[t] || '—')}</td>`).join('')}</tr></table>`;
+    <tr><th>Tot</th><th>${hl.reduce((x, h) => x + h.par, 0)}</th><th></th>${TL.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${hl.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>
+    <tr><td class="small mut">R/S</td><td></td><td></td>${TL.map(t => `<td class="small mut${t === selTee ? ' x1' : ''}">${esc(cr.rating[t] || '—')}</td>`).join('')}</tr></table>`;
 }
 function renderStaticCard() {
   const cn = S ? S.course : pref.course, cr = C.courses[cn];
+  if (cardSel.tee && !teesOf(cn).includes(cardSel.tee)) cardSel.tee = null; // tee from the other club
   const pick = cardSel.tee && cardSel.hole ? `<div class="small" style="margin-top:6px">Hole <b>${cardSel.hole}</b> from the <b>${cardSel.tee}</b> tees: <b style="color:var(--acc)">${cr.holes[cardSel.hole - 1].yds[cardSel.tee]} yds</b> · par ${cr.holes[cardSel.hole - 1].par} · hcp ${cr.holes[cardSel.hole - 1].hcp}</div>` : '';
-  $('#main').innerHTML = `<div class="card"><div class="row">${['West', 'East'].map(c => `<button class="${cn === c ? 'on' : ''}" onclick="${S ? '' : `pref.course='${c}';savePref();`}render()" ${S && S.course !== c ? 'disabled style="opacity:.4"' : ''}>${c}</button>`).join('')}</div>
-    <div class="small mut" style="margin-top:6px">Bear Creek Golf Club — ${cn} course scorecard. Tap a tee color and a hole number to highlight them; tap again to clear.</div>${pick}</div>
+  $('#main').innerHTML = `<div class="card"><div class="row">${coursesOfClub(clubOf(cn)).map(c => `<button class="${cn === c ? 'on' : ''}" onclick="${S ? '' : `setCourse('${c}');`}render()" ${S && S.course !== c ? 'disabled style="opacity:.4"' : ''}>${c}</button>`).join('')}</div>
+    <div class="small mut" style="margin-top:6px">${esc(club().name)} — ${cn} course scorecard. Tap a tee color and a hole number to highlight them; tap again to clear.</div>${pick}</div>
   <div class="card" style="padding:6px">${scorecardTable(cn, cardSel.tee, cardSel.hole, true)}</div>
   <div class="card small">${esc(cr.blurb)}</div>`;
 }
@@ -1020,7 +1081,7 @@ function renderCard() {
   const t = totals();
   const half = (a, b, lab) => {
     let pr = 0, yd = 0, sc = 0, has = false, rows = '';
-    for (let n = a; n <= b; n++) { const h = H(n), r = rel(n); pr += h.par; yd += h.yds[S.tee]; if (r != null && (S.holes[n].done || S.holes[n].adj != null)) { sc += h.par + r; has = true; }
+    for (let n = a; n <= b; n++) { const h = H(n), r = rel(n); pr += h.par; yd += h.yds[S.tee]; if (r != null && (S.holes[n].done || S.holes[n].manual)) { sc += h.par + r; has = true; }
       const cu = n === S.cur && !S.ended ? ' class="curRow"' : ''; rows += `<tr${cu} onclick="tab='hole';goHole(${n},false)"><td><b>${n}</b></td><td>${h.par}</td><td>${h.hcp}</td><td>${h.yds[S.tee]}</td><td class="${relCls(r)}"><b>${r != null ? h.par + r : ''}</b></td><td class="${relCls(r)}">${r != null ? relStr(r) : ''}</td><td>${fmtDur(holeTime(n))}</td></tr>`; }
     return rows + `<tr><th>${lab}</th><th>${pr}</th><th></th><th>${yd}</th><th>${has ? sc : ''}</th><th></th><th></th></tr>`;
   };
@@ -1038,7 +1099,7 @@ function renderCard() {
   <div class="card" style="padding:6px"><table><tr><th>#</th><th>Par</th><th>Hcp</th><th>Yds</th><th>Score</th><th>±</th><th>Time</th></tr>${half(1, 9, 'Out')}${half(10, 18, 'In')}</table>
     <div class="small mut" style="padding:6px">Hole time uses GPS arrival → departure when available, otherwise start → "Complete hole". Tap a row to open that hole.</div></div>
   ${(() => { const s = roundStats(S); if (!s.thru) return '';
-    const past = Object.values(rounds()).filter(r => r.id !== S.id && r.order && r.started).map(r => ({r, s: roundStats(r)})).filter(x => x.s.thru >= 9).sort((x, y) => y.r.started - x.r.started).slice(0, 5);
+    const past = Object.values(rounds()).filter(r => r.id !== S.id && r.order && r.started && C.courses[r.course] && clubOf(r.course) === clubOf(S.course)).map(r => ({r, s: roundStats(r)})).filter(x => x.s.thru >= 9).sort((x, y) => y.r.started - x.r.started).slice(0, 5);
     return `<div class="card"><b>📊 ${S.mode === 'scramble' ? 'Team' : 'Your'} stats</b>
       <div class="dist" style="margin:8px 0 0"><div><div class="lab">Fairways</div><div class="num sm2">${pct(s.fh, s.ft)}</div><div class="small mut">${s.fh}/${s.ft}</div></div><div><div class="lab">Greens (GIR)</div><div class="num sm2">${pct(s.gh, s.gt)}</div><div class="small mut">${s.gh}/${s.gt}</div></div><div><div class="lab">Putts</div><div class="num sm2">${s.putts}</div><div class="small mut">${(s.putts / Math.max(1, s.ph)).toFixed(1)}/hole</div></div></div>
       <div class="small" style="margin-top:8px">${s.dist.eagle ? '🦅 ' + s.dist.eagle + ' eagle · ' : ''}🐦 ${s.dist.birdie} birdie · ${s.dist.par} par · ${s.dist.bogey} bogey · ${s.dist.dbl} double+</div>
@@ -1050,16 +1111,15 @@ function renderCard() {
 }
 function shareCard() {
   const t = totals();
-  let s = `Bear Creek ${S.course} (${S.tee}) — ${S.mode === 'scramble' ? 'Scramble: ' + S.players.filter(Boolean).join(', ') : 'Solo'}\n${relStr(t.r)} (${t.str}) thru ${t.thru}\n`;
+  let s = `${club().short} ${S.course} (${S.tee}) — ${S.mode === 'scramble' ? 'Scramble: ' + S.players.filter(Boolean).join(', ') : 'Solo'}\n${relStr(t.r)} (${t.str}) thru ${t.thru}\n`;
   S.order.forEach(n => { const r = rel(n); if (r != null) s += `#${n} par ${H(n).par}: ${H(n).par + r} (${relStr(r)})  ${fmtDur(holeTime(n))}\n`; });
-  if (navigator.share) navigator.share({text: s}).catch(() => {}); else { navigator.clipboard && navigator.clipboard.writeText(s); alert('Copied to clipboard'); }
+  if (navigator.share) navigator.share({text: s}).catch(() => {}); else { if (navigator.clipboard) navigator.clipboard.writeText(s).then(() => alert('Copied to clipboard'), () => alert(s)); else alert(s); }
 }
 
-const LS_PHOTO_TS = LS_PHOTO + '_ts';
-function showPhoto() { let p = null; try { p = localStorage.getItem(LS_PHOTO); } catch (e) {} if (!p) return; modal(`<img src="${p}" style="width:100%;border-radius:10px;display:block"><button style="width:100%;margin-top:8px" onclick="closeModal()">Close</button>`); }
-function removePhoto() { if (!confirm('Remove the pin sheet photo?')) return; try { localStorage.removeItem(LS_PHOTO); localStorage.removeItem(LS_PHOTO_TS); } catch (e) {} render(); }
+function showPhoto() { let p = null; try { p = localStorage.getItem(photoKey()); } catch (e) {} if (!p) return; modal(`<img src="${p}" style="width:100%;border-radius:10px;display:block"><button style="width:100%;margin-top:8px" onclick="closeModal()">Close</button>`); }
+function removePhoto() { if (!confirm('Remove the pin sheet photo?')) return; try { localStorage.removeItem(photoKey()); localStorage.removeItem(photoKey() + '_ts'); } catch (e) {} render(); }
 function renderPins() {
-  let photo = null, photoTs = 0; try { photo = localStorage.getItem(LS_PHOTO); photoTs = +localStorage.getItem(LS_PHOTO_TS) || 0; } catch (e) {}
+  let photo = null, photoTs = 0; try { photo = localStorage.getItem(photoKey()); photoTs = +localStorage.getItem(photoKey() + '_ts') || 0; } catch (e) {}
   const rows = S ? S.order.map(n => { const st = hs(n), h = H(n), g = greenAxis(h); return `<tr><td><b>${n}</b></td><td>${st.pin ? '✅' : '<span class="mut">mid</span>'}</td><td>${['F', 'M', 'B'].map((k, i) => `<button class="sm" onclick="quickPin(${n},${[0.25, 0.5, 0.75][i]})">${k}</button>`).join(' ')}</td><td class="small mut">${Math.round(g.depthYds)}y deep</td><td><button class="sm" onclick="tab='hole';tapMode='pin';goHole(${n},false)">tap</button> ${st.pin ? `<button class="sm" onclick="hs(${n}).pin=null;save();render()">✕</button>` : ''}</td></tr>`; }).join('') : '';
   $('#main').innerHTML = `<div class="card"><b>📷 Pin sheet</b><div class="small mut">Snap the pin sheet the starter hands out. It stays on this phone so you can check it on every hole.</div>
     <button class="pri" style="width:100%;margin-top:8px" onclick="$('#photoIn').click()">${photo ? 'Retake photo' : 'Take photo of pin sheet'}</button>
@@ -1083,7 +1143,7 @@ $('#photoIn').addEventListener('change', e => {
   const f = e.target.files[0]; if (!f) return;
   const img = new Image(), url = URL.createObjectURL(f);
   img.onload = () => { const k = Math.min(1, 1600 / Math.max(img.width, img.height)), cv = document.createElement('canvas'); cv.width = img.width * k; cv.height = img.height * k; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-    try { localStorage.setItem(LS_PHOTO, cv.toDataURL('image/jpeg', 0.8)); localStorage.setItem(LS_PHOTO_TS, String(Date.now())); } catch (er) { alert('Photo too large to store'); } URL.revokeObjectURL(url); render(); };
+    try { localStorage.setItem(photoKey(), cv.toDataURL('image/jpeg', 0.8)); localStorage.setItem(photoKey() + '_ts', String(Date.now())); } catch (er) { alert('Photo too large to store'); } URL.revokeObjectURL(url); render(); };
   img.src = url; e.target.value = '';
 });
 
@@ -1093,6 +1153,11 @@ function renderInfo() {
   if (wx && wx.hourly) { const now = Date.now(); const idx = wx.hourly.time.map((t, i) => [new Date(t).getTime(), i]).filter(([t]) => t > now - 3600e3).slice(0, 6);
     hourly = `<table><tr><th class="l">Time</th><th>°F</th><th>Wind</th><th>Gust</th><th>Rain</th></tr>${idx.map(([t, i]) => `<tr><td class="l">${fmtClock(t)}</td><td>${Math.round(wx.hourly.temperature_2m[i])}</td><td>${Math.round(wx.hourly.wind_speed_10m[i])} ${compass(wx.hourly.wind_direction_10m[i])}</td><td>${Math.round(wx.hourly.wind_gusts_10m[i])}</td><td>${wx.hourly.precipitation_probability[i]}%</td></tr>`).join('')}</table>`; }
   const rho = c ? airDensity(c.temperature_2m, c.surface_pressure, c.relative_humidity_2m) : null;
+  const cl = club(), ck = clubOf(course()), dg = String(cl.phone || '').replace(/\D/g, ''), lk = CLUB_LINKS[ck]; // club contact (tel: from the digits)
+  const infoCard = `<div class="card"><b>${course()} course</b><div class="small">${esc(cr.blurb)}</div>
+    <table style="margin-top:6px"><tr><th class="l">Tee</th><th>Yards</th><th>Rating / Slope</th></tr>${teesOf(course()).map(t => `<tr><td class="l">${t}</td><td>${cr.holes.reduce((a, h) => a + h.yds[t], 0)}</td><td>${esc(cr.rating[t] || '')}</td></tr>`).join('')}</table>
+    <div class="small" style="margin-top:6px"><a style="color:var(--acc)" href="tel:${dg.length === 10 ? '+1' : ''}${dg}">📞 Pro shop ${esc(cl.phone)}</a> · ${esc(cl.addr)}${lk ? `<br>
+    <a style="color:var(--acc)" target="_blank" href="${lk.site}">Club website</a> · <a style="color:var(--acc)" target="_blank" href="${lk.tee}">Tee times</a>` : ''}</div></div>`;
   $('#main').innerHTML = `
   <div class="card"><b>Weather now</b> <span class="small mut">${wxAge()}</span>
     ${c ? `<div style="font-size:22px;font-weight:800;margin:4px 0">${Math.round(c.temperature_2m)}°F · wind ${Math.round(c.wind_speed_10m)} mph ${compass(c.wind_direction_10m)}, gusts ${Math.round(c.wind_gusts_10m)}</div>
@@ -1102,10 +1167,7 @@ function renderInfo() {
     • <b>Wind:</b> live wind vs. your shot line: +1% per mph into, −0.5% per mph helping, crosswind gives an aim-off. Scaled down for short shots.<br>
     • <b>Air:</b> temperature, humidity and barometric pressure → air density (≈0.55% distance per 1% density).<br>
     These are standard rules of thumb (like a slope rangefinder plus weather), not a launch monitor. Trust your eyes on gusty days.</div>
-  <div class="card"><b>${course()} course</b><div class="small">${esc(cr.blurb)}</div>
-    <table style="margin-top:6px"><tr><th class="l">Tee</th><th>Yards</th><th>Rating / Slope</th></tr>${TEES.map(t => `<tr><td class="l">${t}</td><td>${cr.holes.reduce((a, h) => a + h.yds[t], 0)}</td><td>${esc(cr.rating[t] || '')}</td></tr>`).join('')}</table>
-    <div class="small" style="margin-top:6px"><a style="color:var(--acc)" href="tel:+19724563200">📞 Pro shop 972-456-3200</a> · 3500 Bear Creek Ct, DFW Airport, TX<br>
-    <a style="color:var(--acc)" target="_blank" href="https://arcisgolf.com/clubs/bear-creek-golf-club/golf-course">Club website</a> · <a style="color:var(--acc)" target="_blank" href="https://bearcreektxpp.ezlinksgolf.com/index.html#/preSearch">Tee times</a></div></div>
+  ${infoCard}
   <div class="card"><b>Auto-advance holes</b> <span class="small mut">When you walk to the next tee, move to that hole and ask for the score of the one you just finished.</span><div class="row" style="margin-top:6px"><button class="${pref.autoAdv !== false ? 'on' : ''}" onclick="pref.autoAdv=pref.autoAdv===false;savePref();render()">${pref.autoAdv !== false ? '✅ On' : 'Off'}</button></div></div>
   <div class="card"><b>Offline maps</b> <span class="small mut">Save the satellite map on this phone so holes load instantly and work with no signal.</span><div class="row" style="margin-top:6px"><button class="sm" onclick="downloadOffline()">⬇️ Save maps offline</button><span class="small mut" id="offStat">${offlineStatus()}</span></div></div>
   <div class="card row">${S ? `<button onclick="endRound()" style="background:#5a2620">Finish / new round</button>` : ''}<button onclick="requestWake();alert(wakeLock?'Screen will stay on':'Screen-on not supported here')">☀️ Keep screen on</button></div>
@@ -1137,16 +1199,23 @@ async function forceUpdate() {
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
 (async function boot() {
   $('#main').innerHTML = '<div class="card">Loading course…</div>';
-  try { C = await (await cachedFetch('course.json', 4000)).json(); } catch (e) { $('#main').innerHTML = '<div class="card">Could not load course data. Check your connection and reload.</div>'; return; }
-  loadDEM();
+  try { C = await (await cachedFetch('course.json', 4000)).json(); closeRings(); } catch (e) { $('#main').innerHTML = '<div class="card">Could not load course data. Check your connection and reload.</div>'; return; }
+  if (!C.courses[pref.course]) pref.course = 'West';
+  if (!Array.isArray(pref.players)) pref.players = ['Travis', '', '', ''];
+  pref.tee = validTee(pref.course, pref.tee); // old prefs (West/East, any tee) keep working
   let cur = null; try { cur = localStorage.getItem(LS_KEY); } catch (e) {}
   if (cur && cur[0] === '{') { try { const old = JSON.parse(cur); if (old && old.order && !old.preview) { old.id = old.id || 'r' + (old.started || Date.now()); old.name = old.name || 'Round ' + new Date(old.started || Date.now()).toLocaleDateString(); S = old; save(); } } catch (e) {} cur = S ? S.id : null; }
   S = cur ? (rounds()[cur] || null) : null;
   if (S && (S.preview || S.ended)) S = null; // finished rounds open from the list
-  if (S) { viewHole = S.cur; if (S.started && !S.ended) requestWake(); }
-  startGPS(); render(); loadWx();
+  if (S) { fixTee(S); viewHole = S.cur; if (S.started && !S.ended) requestWake(); if (S.pendingScore && !hs(S.pendingScore).done) pendingScore = S.pendingScore; }
+  loadDEM(); // the club of the round (or of the saved pref)
+  startGPS();
+  try { render(); } catch (e) { // a broken saved round must not brick the app
+    console.error(e); S = null; try { localStorage.removeItem(LS_KEY); } catch (e2) {} tab = 'hole'; try { render(); } catch (e3) {}
+  }
+  loadWx();
   setInterval(renderHeader, 5000);
-  setInterval(liveUpdate, 2000);
+  setInterval(() => { if (!gps || Date.now() - gps.ts > 1500) liveUpdate(); }, 2000); // GPS fixes already refresh it
   setInterval(() => loadWx(), 20000);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

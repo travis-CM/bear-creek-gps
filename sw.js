@@ -1,7 +1,7 @@
 // App files + course data: network first, but fall back to the saved copy after 4 s (weak signal on the course).
 // Map tiles are cached by the app itself (bcgps-tiles, Cache API); the service worker leaves them alone so they are not stored twice.
-const V = 'bcgps-v17';
-const PRECACHE = ['./', 'index.html', 'app.js', 'sw.js', 'course.json', 'dem.bin', 'manifest.json', 'icon.svg', 'icon-180.png', 'logo-golfhub.png',
+const V = 'bcgps-v18';
+const PRECACHE = ['./', 'index.html', 'app.js', 'sw.js', 'course.json', 'dem.bin', 'dem_tcc.bin', 'manifest.json', 'icon.svg', 'icon-180.png', 'logo-golfhub.png',
   'vendor/leaflet.js', 'vendor/leaflet.css', 'vendor/leaflet-rotate.js'];
 // one add per file: a single missing file must not empty the whole offline cache (addAll is all-or-nothing)
 self.addEventListener('install', e => { self.skipWaiting(); e.waitUntil(caches.open(V).then(c => Promise.all(PRECACHE.map(f => c.add(f).catch(() => {}))))); });

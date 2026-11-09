@@ -14,3 +14,6 @@
 - 2026-11-09: West 14 yardages (Blue 144 shorter than Silver 161) stay as they are. Why: GolfPass, the card source, lists exactly those numbers; the oddity is in the published card.
 - 2026-11-09: Swift (iPhone / Watch) and workflow findings from the sweep are recorded, not fixed, in this branch. Why: no Xcode here to compile, and a workflow or bundle.json change on a branch starts a TestFlight build.
 - 2026-11-09: Both workflows trigger on `main` only (`branches: [main]`), still on bundle.json / workflow-file changes, plus manual dispatch. Why: a merge from main onto the review-sweep branch started a TestFlight build and reverted the branch's app files. Travis approved; the repack of bundle.json rode the same commit so the branch push itself started nothing.
+- Multi-club data: `course.json` has `clubs` (name, place, phone, courses, per-club DEM file) and each course has `club` and `tees`. Bear Creek stays `bc`, Trophy Club is `tcc`; old app versions still read top-level `dem`.
+- Trophy Club tee names Blue/Copper/White/Gold/Silver (the club site says Tee 1-5). Handicaps from GolfPass (the club site has none).
+- Holes OSM lacks are traced into `tcc_traced.json` (back tee -> dogleg -> green centre); tees are placed along that line by yardage.

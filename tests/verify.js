@@ -108,8 +108,8 @@ const ok = (name, cond, info) => { (cond ? logs : fails).push(`${cond ? 'PASS' :
   ok('forceUpdate offline does nothing', page.url() === url0);
   await ctx.setOffline(false);
   // 17: service worker + precache
-  r = await run(async () => { const reg = await navigator.serviceWorker.getRegistration(); const keys = await caches.keys(); const c = await caches.open('bcgps-v17'); const ks = (await c.keys()).map(q => new URL(q.url).pathname); return { active: !!(reg && reg.active), keys, hasVendor: ks.some(k => k.endsWith('vendor/leaflet.js')), hasApp: ks.some(k => k.endsWith('/app.js')), count: ks.length }; });
-  ok('SW active, v17 precache holds vendor + app.js', r.active && r.hasVendor && r.hasApp, r);
+  r = await run(async () => { const reg = await navigator.serviceWorker.getRegistration(); const keys = await caches.keys(); const vk = keys.find(k => /^bcgps-v\d+$/.test(k)); const c = await caches.open(vk || 'bcgps-v0'); const ks = (await c.keys()).map(q => new URL(q.url).pathname); return { active: !!(reg && reg.active), keys, hasVendor: ks.some(k => k.endsWith('vendor/leaflet.js')), hasApp: ks.some(k => k.endsWith('/app.js')), count: ks.length }; });
+  ok('SW active, versioned precache holds vendor + app.js', r.active && r.hasVendor && r.hasApp, r);
   await page.screenshot({ path: __dirname + '/hole.png' });
   ok('no console errors during the run', errors.length === 0, errors);
   console.log(logs.join('\n')); console.log(fails.join('\n'));

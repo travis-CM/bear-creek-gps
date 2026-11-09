@@ -36,11 +36,11 @@ struct YView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("HOLE \(e.hole)").font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
                 Text(e.live ? "\(e.mid) yds" : "-- yds").font(.system(size: 26, weight: .heavy, design: .rounded))
-                Text(e.live ? "F \(e.front) · B \(e.back)" : "Start a round").font(.system(size: 12, weight: .semibold))
+                Text(e.live ? "F \(e.front > 0 ? String(e.front) : "—") · B \(e.back > 0 ? String(e.back) : "—")" : "Start a round").font(.system(size: 12, weight: .semibold))
             }.frame(maxWidth: .infinity, alignment: .leading)
         case .accessoryCorner:
             Text(e.live ? "\(e.mid)" : "--").font(.system(size: 22, weight: .heavy, design: .rounded))
-                .widgetLabel("H\(e.hole) · F\(e.front) B\(e.back)")
+                .widgetLabel("H\(e.hole) · F\(e.front > 0 ? String(e.front) : "—") B\(e.back > 0 ? String(e.back) : "—")")
         default:
             Text(e.live ? "H\(e.hole) \(e.mid) yds" : "GolfHub")
         }

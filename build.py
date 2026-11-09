@@ -5,11 +5,19 @@ els = d['elements']
 if os.path.exists('water.json'):  # OSM waterways (creeks/streams), fetched best-effort by the workflow
     els = els + json.load(open('water.json')).get('elements', [])
 
-def P(e, n=6): return [[round(p['lat'], n), round(p['lon'], n)] for p in e['geometry']]
+def P(e, n=6):
+    g = e.get('geometry')
+    if g is None:  # multipolygon relation: use its largest outer ring
+        outs = [m['geometry'] for m in e.get('members', []) if m.get('role') == 'outer' and m.get('geometry')]
+        g = max(outs, key=len) if outs else []
+    return [[round(p['lat'], n), round(p['lon'], n)] for p in g]
 
-LAT0 = 32.86
+LAT0, LON0 = 32.86, -97.06
 KX = 111320 * math.cos(math.radians(LAT0)); KY = 110540
-def xy(p): return ((p[1] + 97.06) * KX, (p[0] - LAT0) * KY)
+def set_origin(lat, lon):
+    global LAT0, LON0, KX
+    LAT0, LON0 = lat, lon; KX = 111320 * math.cos(math.radians(LAT0))
+def xy(p): return ((p[1] - LON0) * KX, (p[0] - LAT0) * KY)
 def dist(a, b):
     ax, ay = xy(a); bx, by = xy(b); return math.hypot(ax - bx, ay - by)
 def seg_d(p, a, b):
@@ -61,11 +69,23 @@ SC = {
           'rating': {'Black': '73.6 / 139', 'Blue': '72.0 / 134 · W 78.6 / 143', 'Silver': '69.3 / 128 · W 75.1 / 132', 'Red': '69.0 / 126 · W 74.7 / 131'},
           'notes': {},
           'blurb': 'Ted Robinson design. Considered a touch harder than the West: tighter fairways, smaller greens, 14 of 18 holes dogleg — a target course.'},
+ 'Hogan': {'hcp': [1, 5, 13, 7, 15, 3, 11, 17, 9, 4, 8, 18, 12, 6, 14, 2, 16, 10],
+          'par': [5, 4, 4, 4, 3, 5, 4, 3, 4, 5, 4, 3, 4, 4, 4, 5, 3, 4],
+          'tees': {"Blue": [521, 404, 414, 379, 194, 526, 441, 210, 425, 588, 400, 194, 418, 400, 448, 525, 194, 379], "Copper": [521, 377, 378, 379, 174, 526, 409, 163, 392, 526, 361, 168, 381, 400, 414, 525, 175, 379], "White": [494, 377, 351, 350, 148, 492, 409, 163, 392, 526, 361, 168, 362, 372, 339, 491, 175, 348], "Gold": [444, 325, 351, 316, 148, 492, 328, 110, 338, 496, 315, 152, 362, 372, 339, 491, 153, 348], "Silver": [444, 325, 286, 316, 119, 423, 328, 110, 338, 496, 315, 152, 339, 343, 318, 404, 153, 332]},
+          'rating': {"Blue": "74.1 / 133", "Copper": "72.3 / 130", "White": "71.1 / 128", "Gold": "68.4 / 125", "Silver": "66.9 / 122"},
+          'notes': {},
+          'blurb': "Ben Hogan's only course design (with Joe Lee, 1975). Strategic lines, elevated back-to-front greens, creek and ponds in play; par 5s at 1, 6, 10 and 16."},
+ 'Whitworth': {'hcp': [12, 8, 16, 14, 4, 6, 2, 18, 10, 3, 7, 5, 15, 9, 1, 11, 17, 13],
+          'par': [4, 4, 3, 4, 5, 4, 5, 3, 4, 5, 4, 4, 3, 5, 4, 4, 3, 4],
+          'tees': {"Blue": [394, 402, 158, 403, 610, 388, 520, 212, 362, 517, 408, 419, 205, 560, 370, 427, 177, 460], "Copper": [394, 370, 127, 387, 557, 388, 520, 174, 336, 517, 375, 370, 167, 560, 339, 393, 177, 396], "White": [364, 370, 117, 372, 557, 343, 488, 149, 305, 487, 375, 349, 167, 528, 320, 393, 125, 396], "Gold": [364, 304, 117, 348, 512, 343, 488, 134, 305, 487, 276, 318, 130, 528, 296, 335, 125, 327], "Silver": [289, 304, 95, 348, 463, 306, 436, 134, 277, 419, 276, 286, 130, 447, 276, 335, 92, 327], "Junior": [224, 208, 84, 199, 370, 190, 309, 107, 188, 298, 224, 172, 99, 270, 65, 237, 89, 202]},
+          'rating': {"Blue": "74.0 / 135", "Copper": "72.0 / 130", "White": "70.4 / 126", "Gold": "68.3 / 122", "Silver": "66.3 / 115", "Junior": "59.8 / 100"},
+          'notes': {},
+          'blurb': "Arthur Hills design (1975), named in 2008 for LPGA legend Kathy Whitworth. Tree-lined fairways, bunkered greens, natural water; the par-5 5th is the longest hole (610 from the Blue)."},
 }
 
 
 # ---- creeks / streams (OSM waterway lines) -> corridor polygons clipped to the stretch near each hole ----
-def inv(x, y): return [round(y / KY + LAT0, 6), round(x / KX - 97.06, 6)]
+def inv(x, y): return [round(y / KY + LAT0, 6), round(x / KX + LON0, 6)]
 def densify(l, step=8.0):
     out = [l[0]]
     for a, b in zip(l, l[1:]):
@@ -89,8 +109,7 @@ def covered_by_water(pt):
 
 out = {'courses': {}}
 used_bunk = set()
-for cname in ('West', 'East'):
-    hs = sorted([h for h in holes if h['tags'].get('golf:course:name') == cname], key=lambda h: int(h['tags']['ref']))
+def build_course(cname, hs, club):
     arr = []
     for h in hs:
         r = int(h['tags']['ref']); l = P(h)
@@ -139,7 +158,39 @@ for cname in ('West', 'East'):
                     'note': SC[cname]['notes'].get(r, ''),
                     'osmPar': int(h['tags'].get('par', 0))})
         if arr[-1]['osmPar'] != arr[-1]['par']: print('PAR MISMATCH', cname, r, file=sys.stderr)
-    out['courses'][cname] = {'holes': arr, 'rating': SC[cname]['rating'], 'blurb': SC[cname]['blurb']}
+    out['courses'][cname] = {'holes': arr, 'rating': SC[cname]['rating'], 'blurb': SC[cname]['blurb'], 'club': club, 'tees': list(SC[cname]['tees'])}
+
+for cname in ('West', 'East'):
+    build_course(cname, sorted([h for h in holes if h['tags'].get('golf:course:name') == cname], key=lambda h: int(h['tags']['ref'])), 'bc')
+
+# ---- Trophy Club Country Club (Hogan from OpenStreetMap, Whitworth hole lines traced from imagery + the club's hole maps) ----
+HOGAN_IDS = [708515891, 708516593, 708519481, 708523428, 708530350, 708576043, 708577948, 708577955, 708580485,
+             708896890, 708896900, 708924910, 708968843, 708968849, 708968858, 709004809, 709004814]  # holes 1-17
+if os.path.exists('tcc_osm.json'):
+    els = json.load(open('tcc_osm.json'))['elements']
+    try: els = els + json.load(open('tcc_water.json')).get('elements', [])
+    except Exception: print('no tcc waterways', file=sys.stderr)
+    set_origin(33.0, -97.19)
+    holes = [e for e in els if e['tags'].get('golf') == 'hole']
+    greens = [P(e) for e in els if e['tags'].get('golf') == 'green' and P(e)]
+    tees = [P(e, 6) for e in els if e['tags'].get('golf') == 'tee' and P(e)]
+    bunkers = [P(e) for e in els if e['tags'].get('golf') == 'bunker' and P(e)]
+    water = [P(e, 6) for e in els if (e['tags'].get('golf') in ('water_hazard', 'lateral_water_hazard') or e['tags'].get('natural') == 'water') and P(e)]
+    water.append([[33.003195, -97.176844], [33.003388, -97.176568], [33.003465, -97.17631], [33.003205, -97.176327], [33.002819, -97.176431], [33.002434, -97.176534], [33.00212, -97.17658], [33.002039, -97.176672], [33.002337, -97.176729], [33.002713, -97.176786], [33.002916, -97.176763]])  # Whitworth 15 greenside pond, missing from OSM; traced from Esri imagery
+    fairways = [P(e, 5) for e in els if e['tags'].get('golf') == 'fairway' and P(e)]
+    wl = [e for e in els if e['tags'].get('waterway') in WATERWAYS and not e['tags'].get('tunnel') and not e['tags'].get('culvert') and 'geometry' in e]
+    waterlines = [densify(P(e)) for e in wl]; wl_types = [e['tags'].get('waterway') for e in wl]
+    byid = {e['id']: e for e in els if e['tags'].get('golf') == 'hole'}
+    # traced hole lines (back tee -> dogleg points -> green centre) for holes OpenStreetMap lacks: Hogan 18, all of Whitworth
+    tr = json.load(open('tcc_traced.json')) if os.path.exists('tcc_traced.json') else {}
+    def traced(cname, n):
+        return {'tags': {'ref': str(n), 'par': str(SC[cname]['par'][n - 1])}, 'geometry': [{'lat': p[0], 'lon': p[1]} for p in tr[cname][str(n)]]}
+    hog = []
+    for i, hid in enumerate(HOGAN_IDS):
+        e = dict(byid[hid]); e['tags'] = dict(e['tags'], ref=str(i + 1), par=str(SC['Hogan']['par'][i])); hog.append(e)
+    if '18' in tr.get('Hogan', {}): hog.append(traced('Hogan', 18))
+    if len(hog) == 18: build_course('Hogan', hog, 'tcc')
+    if len(tr.get('Whitworth', {})) == 18: build_course('Whitworth', [traced('Whitworth', n) for n in range(1, 19)], 'tcc')
 
 # ---- elevation raster (USGS 3DEP) -> dem.bin (uint16 cm above 130 m, row 0 = north) ----
 from PIL import Image
@@ -152,6 +203,21 @@ cm=np.clip(np.round((b-130.0)*100),0,65535).astype('<u2')
 cm.tofile('dem.bin')
 out['dem']={'n':32.875,'s':32.845,'w':-97.075,'e':-97.040,'cols':W,'rows':W,'base':130.0,'scale':0.01,'units':'m'}
 print('dem', b.min(), b.max(), file=sys.stderr)
+out['clubs'] = {
+  'bc': {'name': 'Bear Creek Golf Club', 'short': 'Bear Creek', 'place': 'DFW Airport, TX', 'addr': '3500 Bear Creek Ct, DFW Airport, TX',
+         'phone': '972-456-3200', 'courses': ['West', 'East'], 'dem': dict(out['dem'], file='dem.bin')}}
+TCC_DEM = {'n': 33.016, 's': 32.988, 'w': -97.210, 'e': -97.165, 'cols': 840, 'rows': 620, 'base': 150.0, 'scale': 0.01, 'units': 'm'}
+if 'Hogan' in out['courses'] and (os.path.exists('dem_tcc.tif') or os.path.exists('dem_tcc.bin')):
+    if os.path.exists('dem_tcc.tif'):  # fresh lidar; otherwise keep the committed dem_tcc.bin
+        a = np.array(Image.open('dem_tcc.tif'), dtype=np.float32)
+        b = np.array(Image.fromarray(a).resize((TCC_DEM['cols'], TCC_DEM['rows']), Image.BILINEAR), dtype=np.float32)
+        np.clip(np.round((b - TCC_DEM['base']) * 100), 0, 65535).astype('<u2').tofile('dem_tcc.bin')
+        print('dem tcc', b.min(), b.max(), file=sys.stderr)
+    out['clubs']['tcc'] = {'name': 'Trophy Club Country Club', 'short': 'Trophy Club', 'place': 'Trophy Club, TX',
+                           'addr': '500 Trophy Club Dr, Trophy Club, TX 76262', 'phone': '817-837-1900',
+                           'courses': [c for c in ('Hogan', 'Whitworth') if c in out['courses']], 'dem': dict(TCC_DEM, file='dem_tcc.bin')}
+for cn in list(out['courses']):
+    if out['courses'][cn]['club'] not in out['clubs']: del out['courses'][cn]
 
 # ---- per-green 1 m lidar grids (USGS 3DEP) for the green-slope view ----
 import urllib.request, io, time
