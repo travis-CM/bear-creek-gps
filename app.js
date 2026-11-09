@@ -191,15 +191,18 @@ function elevAt(p) { // feet
 const WX_TTL = 2 * 60e3; // refresh every 2 minutes
 let wxModel = null, wxObs = null, wxLoading = false;
 // nearest NWS station per club: [id, label, station elevation ft for sea-level -> station pressure]
-const WX_STN = {bc: ['KDFW', 'DFW Airport', 560], tcc: ['KAFW', 'Fort Worth Alliance', 690]};
+// 4th field: take wind from the forecast model at your GPS spot instead (station too far for local wind)
+const WX_STN = {bc: ['KDFW', 'DFW Airport', 560, false], tcc: ['KAFW', 'Fort Worth Alliance', 690, true]};
 function wxStn() { return WX_STN[clubOf(course())] || WX_STN.bc; }
 function combineWx() {
   const obsFresh = wxObs && wxObs.stn === wxStn()[0] && Date.now() - wxObs.ts < 40 * 60e3;
   if (!wxModel && !obsFresh) return;
   const cur = obsFresh ? Object.assign({}, wxModel ? wxModel.current : {}, wxObs.current) : wxModel.current;
+  const modelWind = obsFresh && wxStn()[3] && wxModel && wxModel.current && wxModel.current.wind_speed_10m != null;
+  if (modelWind) ['wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m'].forEach(k => { if (wxModel.current[k] != null) cur[k] = wxModel.current[k]; });
   if (cur.apparent_temperature == null) cur.apparent_temperature = cur.temperature_2m;
   wx = {current: cur, hourly: wxModel && wxModel.hourly, daily: wxModel && wxModel.daily,
-        src: obsFresh ? wxStn()[1] + ' (measured)' : 'Open-Meteo model', obsTs: obsFresh ? wxObs.ts : (wxModel && wxModel.ts)};
+        src: obsFresh ? wxStn()[1] + ' (measured)' + (modelWind ? ' · wind: model at your spot' : '') : 'Open-Meteo model', obsTs: obsFresh ? wxObs.ts : (wxModel && wxModel.ts)};
 }
 async function loadWx(force) {
   if (wxLoading || (!force && wx && Date.now() - wxTs < WX_TTL)) return;
