@@ -43,9 +43,14 @@ jobs:
             curl -sS -m 180 -o dem.tif "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage?bbox=-97.075,32.845,-97.040,32.875&bboxSR=4326&imageSR=4326&size=1100,1100&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation&f=image" && python3 -c "from PIL import Image;Image.open('dem.tif')" && break
             sleep 15
           done
+          for i in 1 2 3 4 5; do
+            curl -sS -m 180 -o dem_tcc.tif "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage?bbox=-97.210,32.988,-97.165,33.016&bboxSR=4326&imageSR=4326&size=1100,700&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation&f=image" && python3 -c "from PIL import Image;Image.open('dem_tcc.tif')" && break
+            sleep 15
+          done
           curl -sS -m 60 -o logo.svg "https://arcisgolf.com/hubfs/Top%20Nav-Bear%20Creek%20Logo-2.svg" || true
           python3 build.py
-          rm -f dem.tif
+          rm -f dem.tif dem_tcc.tif
+          test -f dem_tcc.bin || echo 'WARNING: no Trophy Club elevation'
       - name: Commit
         run: |
           git config user.name "github-actions"

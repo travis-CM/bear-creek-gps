@@ -3,7 +3,10 @@
 const $ = s => document.querySelector(s);
 const YD = 1.09361;
 const LS_KEY = 'bcgps_round_v1', LS_PHOTO = 'bcgps_photo_v1', LS_PREF = 'bcgps_pref_v1';
-const TEES = ['Black', 'Blue', 'Silver', 'Red'];
+const TEES = ['Black', 'Blue', 'Silver', 'Red']; // fallback only: courses carry their own tee list (course.json `tees`)
+const TEE_COL = {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33', Copper: '#b87333', White: '#f2f2f2', Gold: '#d4af37', Junior: '#6fbf73'};
+const BC_CLUB = {name: 'Bear Creek Golf Club', short: 'Bear Creek', place: 'DFW Airport, TX', addr: '3500 Bear Creek Ct, DFW Airport, TX', phone: '972-456-3200', courses: ['West', 'East']}; // fallback if course.json has no clubs
+const CLUB_LINKS = {bc: {site: 'https://arcisgolf.com/clubs/bear-creek-golf-club/golf-course', tee: 'https://bearcreektxpp.ezlinksgolf.com/index.html#/preSearch'}}; // club web links (only where known)
 const PACE_MIN = {3: 12, 4: 14, 5: 17}; // target minutes per hole (~4h12m)
 
 let C = null;            // course data
@@ -33,7 +36,7 @@ function save() { // called after every change (incl. each keystroke in name fie
   } catch (e) {}
 }
 function defaultName() { const d = new Date(); return `${pref.mode === 'scramble' ? 'Scramble' : 'Round'} · ${pref.course} · ${d.toLocaleDateString([], {month: 'short', day: 'numeric'})}`; }
-function resumeRound(id) { const r = rounds()[id]; if (!r) return; S = r; viewHole = S.cur; tab = S.ended ? 'card' : 'hole'; save(); requestWake(); render(); fitHole(true); loadWx(true); }
+function resumeRound(id) { const r = rounds()[id]; if (!r) return; S = r; fixTee(S); loadDEM(); viewHole = S.cur; tab = S.ended ? 'card' : 'hole'; save(); requestWake(); render(); fitHole(true); loadWx(true); }
 function deleteRound(id) { const r = rounds(); if (!r[id] || !confirm(`Delete "${r[id].name}" permanently?`)) return; delete r[id]; try { localStorage.setItem(LS_ROUNDS, JSON.stringify(r)); } catch (e) {} if (S && S.id === id) S = null; render(); }
 function roundSummary(r) { let rr = 0, thru = 0; r.order.forEach(n => { const st = r.holes[n]; if (!st) return; const h = C.courses[r.course].holes[n - 1]; const c = st.shots.filter(s => !s.g || s.g.counts).length; const v = st.adj != null ? st.adj : st.done ? (c ? c - h.par : 0) : null; if (v != null && (st.done || st.adj != null)) { rr += v; thru++; } }); return {rr, thru}; }
 function savePref() { try { localStorage.setItem(LS_PREF, JSON.stringify(pref)); } catch (e) {} }
@@ -102,7 +105,18 @@ function along(l, metersFromStart) { // point along polyline
 function holes() { return C.courses[S ? S.course : pref.course].holes; }
 function H(n) { return holes()[n - 1]; }
 function course() { return S ? S.course : pref.course; }
-function tee() { return S ? S.tee : pref.tee; }
+function clubOf(cn) { const c = C && C.courses[cn]; return (c && c.club) || 'bc'; } // old course data without `club` = Bear Creek
+function clubByKey(k) { const cs = C && C.clubs; if (cs && cs[k]) return cs[k]; return Object.assign({}, BC_CLUB, {dem: C && C.dem}); }
+function club() { return clubByKey(clubOf(course())); } // the club of the current course
+function teesOf(cn) { const c = C && C.courses[cn]; return (c && Array.isArray(c.tees) && c.tees.length) ? c.tees : TEES; }
+function validTee(cn, t) { const ts = teesOf(cn); return ts.includes(t) ? t : ts[Math.floor(ts.length / 2)]; } // tee not on this course → its middle tee
+function tee() { return validTee(course(), S ? S.tee : pref.tee); }
+function fixTee(r) { r.tee = validTee(r.course, r.tee); }
+function coursesOfClub(k) {
+  const all = Object.keys(C.courses).filter(cn => clubOf(cn) === k);
+  const listed = (clubByKey(k).courses || []).filter(cn => C.courses[cn]);
+  return listed.length ? listed : all;
+}
 function greenC(h) { return h._gc || (h._gc = centroid(h.green)); }
 function backLine(h) { // from green center back toward tee, extended
   if (h._bl) return h._bl;
@@ -128,7 +142,7 @@ function pinFromDepth(h, depthYd, latYd) {
 }
 
 /* ---------------- elevation (USGS 3DEP 1 m lidar grid + live fallback) ---------------- */
-let DEM = null;
+const DEMS = {}, DEM_BUSY = {}; // one elevation grid per club, loaded when that club is first used
 async function cachedFetch(url, ms) { // network first, but if it is slow (weak signal) use the copy saved on this phone
   let c = null; try { c = await caches.open('bcgps-data'); } catch (e) {}
   const net = fetch(url).then(async r => { if (!r.ok) throw new Error('bad'); if (c) { try { await c.put(url, r.clone()); } catch (e) {} } return r; });
@@ -137,7 +151,13 @@ async function cachedFetch(url, ms) { // network first, but if it is slow (weak 
   if (!hit) return net;
   return Promise.race([net, new Promise((_, rej) => setTimeout(rej, ms || 3000))]).catch(() => hit);
 }
-async function loadDEM() { try { const buf = await (await cachedFetch('dem.bin', 5000)).arrayBuffer(); DEM = new Uint16Array(buf); render(); } catch (e) {} }
+async function loadDEM() { // grid of the current club only
+  const k = clubOf(course()), m = clubByKey(k).dem;
+  if (!m || DEMS[k] || DEM_BUSY[k]) return;
+  DEM_BUSY[k] = true;
+  try { const buf = await (await cachedFetch(m.file || 'dem.bin', 5000)).arrayBuffer(); DEMS[k] = new Uint16Array(buf); render(); } catch (e) {}
+  DEM_BUSY[k] = false;
+}
 const liveElev = {};
 function greenGridAt(p) { // feet, from the 1 m lidar grid of whichever green p is on
   for (const cn in C.courses) for (const h of C.courses[cn].holes) {
@@ -152,11 +172,11 @@ function greenGridAt(p) { // feet, from the 1 m lidar grid of whichever green p 
 function elevAt(p) { // feet
   if (!p) return null;
   const gg = greenGridAt(p); if (gg != null) return gg;
-  const m = C.dem;
-  if (DEM && p[0] <= m.n && p[0] >= m.s && p[1] >= m.w && p[1] <= m.e) {
+  const k = clubOf(course()), m = clubByKey(k).dem, D = DEMS[k];
+  if (D && m && p[0] <= m.n && p[0] >= m.s && p[1] >= m.w && p[1] <= m.e) {
     const r = (m.n - p[0]) / (m.n - m.s) * (m.rows - 1), q = (p[1] - m.w) / (m.e - m.w) * (m.cols - 1);
     const r0 = Math.min(m.rows - 2, Math.floor(r)), q0 = Math.min(m.cols - 2, Math.floor(q)), fr = r - r0, fq = q - q0;
-    const g = (a, b) => DEM[a * m.cols + b];
+    const g = (a, b) => D[a * m.cols + b];
     const v = g(r0, q0) * (1 - fr) * (1 - fq) + g(r0, q0 + 1) * (1 - fr) * fq + g(r0 + 1, q0) * fr * (1 - fq) + g(r0 + 1, q0 + 1) * fr * fq;
     return (m.base + v * m.scale) * 3.28084;
   }
@@ -280,7 +300,7 @@ function setGpsSource(s) { gpsSrc = s; postNative({type: 'source', value: s}); l
 function pushNativeState() { // tell the iPhone app (and through it the Watch) which hole, pin and weather to use
   if (!NATIVE || !C) return;
   const n = viewHole, p = pinOf(n), c = wx && wx.current;
-  const st = {type: 'state', course: course(), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]], pinSet: !!(S && S.holes[n] && S.holes[n].pin), shots: S && S.started && !S.ended && S.holes[S.cur] ? counted(S.holes[S.cur]) : -1, cur: S && S.started && !S.ended ? S.cur : 0};
+  const st = {type: 'state', course: course(), club: clubOf(course()), hole: n, tee: tee(), par: H(n).par, pin: [p[0], p[1]], pinSet: !!(S && S.holes[n] && S.holes[n].pin), shots: S && S.started && !S.ended && S.holes[S.cur] ? counted(S.holes[S.cur]) : -1, cur: S && S.started && !S.ended ? S.cur : 0};
   if (c) st.wx = {t: c.temperature_2m, rh: c.relative_humidity_2m, p: c.surface_pressure, ws: c.wind_speed_10m, wd: c.wind_direction_10m};
   const k = JSON.stringify(st); if (k !== lastNativeState) { lastNativeState = k; postNative(st); }
   try { // yardages for the lock-screen Live Activity (only while a round is on)
@@ -576,7 +596,7 @@ const CachedTiles = L.TileLayer.extend({ // satellite tiles are saved on the pho
 function tileXY(lat, lon, z) { const n = 2 ** z, r = lat * Math.PI / 180; return [Math.floor((lon + 180) / 360 * n), Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n)]; }
 function courseTiles() {
   let a = 90, b = -90, c = 180, d = -180;
-  Object.values(C.courses).forEach(cr => cr.holes.forEach(h => h.line.concat(h.green).forEach(p => { a = Math.min(a, p[0]); b = Math.max(b, p[0]); c = Math.min(c, p[1]); d = Math.max(d, p[1]); })));
+  Object.keys(C.courses).filter(cn => clubOf(cn) === clubOf(course())).forEach(cn => C.courses[cn].holes.forEach(h => h.line.concat(h.green).forEach(p => { a = Math.min(a, p[0]); b = Math.max(b, p[0]); c = Math.min(c, p[1]); d = Math.max(d, p[1]); })));
   a -= .002; b += .002; c -= .0025; d += .0025;
   const out = [];
   for (let z = 15; z <= 19; z++) { const t1 = tileXY(b, c, z), t2 = tileXY(a, d, z); for (let x = t1[0]; x <= t2[0]; x++) for (let y = t1[1]; y <= t2[1]; y++) out.push(TILE_URL.replace('{z}', z).replace('{y}', y).replace('{x}', x)); }
@@ -586,18 +606,19 @@ let offBusy = false;
 async function downloadOffline() {
   if (offBusy) return;
   const list = courseTiles();
-  if (!confirm('Save the satellite map of both courses on this phone (about ' + Math.round(list.length * 0.022) + ' MB, ' + list.length + ' tiles)? Best on Wi-Fi.')) return;
+  if (!confirm('Save the satellite map of ' + club().name + ' on this phone (about ' + Math.round(list.length * 0.022) + ' MB, ' + list.length + ' tiles)? Best on Wi-Fi.')) return;
   offBusy = true; const st = $('#offStat'); let done = 0, fail = 0;
   try {
     const c = await caches.open('bcgps-tiles'); let i = 0;
     const worker = async () => { while (i < list.length) { const u = list[i++]; try { if (!(await c.match(u))) { const r = await fetch(u); if (!r.ok) throw new Error('bad'); await c.put(u, r); } } catch (e) { fail++; } done++; if (st && done % 10 === 0) st.textContent = 'Saving… ' + Math.round(done / list.length * 100) + '%'; } };
     await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
-    if (!fail) { try { localStorage.setItem('bc_offline', String(Date.now())); } catch (e) {} }
+    if (!fail) { try { localStorage.setItem(offKey(clubOf(course())), String(Date.now())); } catch (e) {} }
     if (st) st.textContent = fail ? 'Saved with ' + fail + ' missing tiles — try again on better signal.' : '✅ Saved for offline use.';
   } catch (e) { if (st) st.textContent = 'Could not save maps on this device.'; }
   offBusy = false;
 }
-function offlineStatus() { let t = null; try { t = localStorage.getItem('bc_offline'); } catch (e) {} return t ? '✅ Saved ' + new Date(+t).toLocaleDateString([], {month: 'short', day: 'numeric'}) : 'Not saved yet'; }
+function offKey(k) { return k === 'bc' ? 'bc_offline' : 'bc_offline_' + k; } // Bear Creek keeps its old key
+function offlineStatus() { let t = null; try { t = localStorage.getItem(offKey(clubOf(course()))); } catch (e) {} return t ? '✅ Saved ' + new Date(+t).toLocaleDateString([], {month: 'short', day: 'numeric'}) : 'Not saved yet'; }
 function initMap() {
   if (map) return;
   map = L.map('map', {zoomControl: false, attributionControl: true, tap: true, maxZoom: 21, rotate: true, bearing: 0, touchRotate: false, shiftKeyRotate: false, rotateControl: false, compassBearing: false});
@@ -660,7 +681,7 @@ function drawMap() {
   h.hz.forEach(z => L.polygon(z.p, {color: z.t === 'b' ? '#f3dc9b' : '#58a8ff', weight: 2, fillOpacity: .15, interactive: false}).addTo(layers));
   L.polygon(h.green, {color: '#fff', weight: 2, fillOpacity: .08, interactive: false}).addTo(layers);
   L.polyline(h.line, {color: '#fff', weight: 1.5, dashArray: '4 6', opacity: .7, interactive: false}).addTo(layers);
-  TEES.forEach(t => { const p = teePos(h, t); L.circleMarker(p, {radius: 5, color: '#000', weight: 1, fillColor: {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33'}[t], fillOpacity: 1, interactive: false}).addTo(layers); });
+  teesOf(course()).forEach(t => { const p = teePos(h, t); L.circleMarker(p, {radius: 5, color: '#000', weight: 1, fillColor: TEE_COL[t], fillOpacity: 1, interactive: false}).addTo(layers); });
   [100, 150, 200, 250].forEach(y => { const p = along(backLine(h), y / YD); if (yds(from, greenC(h)) > y + 10) { L.marker(p, {icon: icon('dot'), interactive: false}).addTo(layers); L.marker(p, {icon: icon('lay', y), interactive: false}).addTo(layers); } });
   { const li = layupInfo(from, viewHole);
     if (li.corner) L.circleMarker(li.corner.p, {radius: 7, color: '#fff', weight: 2, fillColor: '#5aa9ef', fillOpacity: .9, interactive: false}).addTo(layers);
@@ -887,13 +908,16 @@ function setStart(n) { // change starting hole mid-round (keeps everything alrea
 }
 function renderSetup() {
   if (map) { map.remove(); map = null; mapHole = null; }
-  const tees = TEES.map(t => `<option ${t === pref.tee ? 'selected' : ''}>${t}</option>`).join('');
+  const ck = clubOf(pref.course), cks = C.clubs ? Object.keys(C.clubs) : [], tv = validTee(pref.course, pref.tee);
+  const tees = teesOf(pref.course).map(t => `<option ${t === tv ? 'selected' : ''}>${t}</option>`).join('');
+  const clubRow = cks.length ? `<label>Club</label><div class="row">${cks.map(k => `<button class="${ck === k ? 'on' : ''}" onclick="pickClub('${k}')">${esc(clubByKey(k).short)}</button>`).join('')}</div>` : '';
   $('#main').innerHTML = `<div class="card">
-    <h2 style="margin:0 0 4px">New round</h2><div class="mut small">Bear Creek Golf Club · DFW Airport</div>
+    <h2 style="margin:0 0 4px">New round</h2><div class="mut small">${esc(club().name)} · ${esc(club().place)}</div>
     <label>Round name</label><input placeholder="${esc(defaultName())}" value="${esc(pref.roundName || '')}" oninput="pref.roundName=this.value;savePref()">
-    <label>Course</label><div class="row">${['West', 'East'].map(c => `<button class="${pref.course === c ? 'on' : ''}" onclick="pref.course='${c}';savePref();render()">${c}</button>`).join('')}</div>
+    ${clubRow}
+    <label>Course</label><div class="row">${coursesOfClub(ck).map(c => `<button class="${pref.course === c ? 'on' : ''}" onclick="setCourse('${c}');render()">${c}</button>`).join('')}</div>
     <label>Tee box</label><select onchange="pref.tee=this.value;savePref();render()">${tees}</select>
-    <div class="small mut" style="margin-top:4px">${TEES.map(t => `${t}: ${C.courses[pref.course].holes.reduce((a, h) => a + h.yds[t], 0)} yds`).join(' · ')}<br>Rating/slope ${esc(C.courses[pref.course].rating[pref.tee] || '')}</div>
+    <div class="small mut" style="margin-top:4px">${teesOf(pref.course).map(t => `${t}: ${C.courses[pref.course].holes.reduce((a, h) => a + h.yds[t], 0)} yds`).join(' · ')}<br>Rating/slope ${esc(C.courses[pref.course].rating[tv] || '')}</div>
     <label>Format</label><div class="row">${[['scramble', '👥 Scramble (4)'], ['solo', '🙋 Just me']].map(([k, v]) => `<button class="${pref.mode === k ? 'on' : ''}" onclick="pref.mode='${k}';savePref();render()">${v}</button>`).join('')}</div>
     <label>Starting hole — shotgun start? Tap the hole your cart starts on</label>${startGrid('pref.start=N;savePref();render()', pref.start)}
     ${pref.mode === 'scramble' ? `<label>Team (names optional — leave blank to skip)</label>${[0, 1, 2, 3].map(i => `<input style="margin-bottom:6px" placeholder="Golfer ${i + 1}" value="${esc(pref.players[i] || '')}" oninput="pref.players[${i}]=this.value;savePref()">`).join('')}` : ''}
@@ -905,16 +929,20 @@ function renderSetup() {
       return `<div class="shot"><span class="t"><b>${esc(r.name)}</b><br><span class="small mut">${r.course} · ${r.tee} · ${new Date(r.started).toLocaleDateString([], {month: 'short', day: 'numeric'})} ${fmtClock(r.started)} · ${sm.thru ? relStr(sm.rr) + ' thru ' + sm.thru : 'not started'} · ${r.ended ? '✅ finished' : '<span class="warnTxt">in progress</span>'}</span></span><button class="sm ${r.ended ? '' : 'pri'}" onclick="resumeRound('${r.id}')">${r.ended ? 'Open' : 'Resume'}</button><button class="x" onclick="deleteRound('${r.id}')">🗑</button></div>`; }).join('')}</div>`; })()}
   <div class="card small mut">Tip: open this once on Wi-Fi before the round, then in Safari tap Share → <b>Add to Home Screen</b> so it opens full-screen. Allow location when asked.</div>`;
 }
+function setCourse(cn) { // callers re-render; switching club loads that club's elevation grid
+  pref.course = cn; pref.tee = validTee(cn, pref.tee); savePref(); loadDEM();
+}
+function pickClub(k) { const cs = coursesOfClub(k); if (cs.length) { setCourse(cs[0]); render(); } }
 function startRound() {
   const order = []; for (let i = 0; i < 18; i++) order.push(((pref.start - 1 + i) % 18) + 1);
   const players = pref.mode === 'scramble' ? pref.players.map(p => (p || '').trim()) : ['Me'];
   if (pref.mode === 'scramble' && !players.some(p => p)) { players[0] = 'Golfer 1'; players[1] = 'Golfer 2'; players[2] = 'Golfer 3'; players[3] = 'Golfer 4'; }
-  S = {id: 'r' + Date.now(), name: (pref.roundName || '').trim() || defaultName(), course: pref.course, tee: pref.tee, mode: pref.mode, players, order, started: Date.now(), cur: order[0], holes: {}};
+  S = {id: 'r' + Date.now(), name: (pref.roundName || '').trim() || defaultName(), course: pref.course, tee: validTee(pref.course, pref.tee), mode: pref.mode, players, order, started: Date.now(), cur: order[0], holes: {}};
   pref.roundName = ''; savePref();
   hs(order[0]).startTs = S.started; viewHole = order[0]; tab = 'hole'; save(); requestWake(); render(); loadWx(true);
 }
 function previewCourse() {
-  S = {course: pref.course, tee: pref.tee, mode: pref.mode, players: pref.mode === 'scramble' ? pref.players : ['Me'], order: [...Array(18)].map((_, i) => i + 1), started: null, cur: 1, holes: {}, preview: true};
+  S = {course: pref.course, tee: validTee(pref.course, pref.tee), mode: pref.mode, players: pref.mode === 'scramble' ? pref.players : ['Me'], order: [...Array(18)].map((_, i) => i + 1), started: null, cur: 1, holes: {}, preview: true};
   viewHole = 1; render();
 }
 function endRound() {
@@ -925,27 +953,28 @@ function endRound() {
 let cardSel = {tee: null, hole: null};
 function toggleSel(k, v) { cardSel[k] = cardSel[k] === v ? null : v; render(); }
 function scorecardTable(cn, selTee, selHole, interactive) {
-  const cr = C.courses[cn], hl = cr.holes;
-  const dot = {Black: '#111', Blue: '#2f6bff', Silver: '#c8c8c8', Red: '#e33'};
+  const cr = C.courses[cn], hl = cr.holes, TL = teesOf(cn);
+  const dot = TEE_COL;
   const cell = (n, t) => { const r = n === selHole, c = t === selTee; return r && c ? ' class="x2"' : (r || c) ? ' class="x1"' : ''; };
   const hc = n => interactive ? ` onclick="toggleSel('hole',${n})" style="cursor:pointer"` : '';
   const half = (a, b, lab) => {
     let rows = '';
     for (let n = a; n <= b; n++) { const h = hl[n - 1], r = n === selHole ? ' class="x1"' : '';
-      rows += `<tr><td${r}${hc(n)}><b>${n}</b></td><td${r}>${h.par}</td><td${r}>${h.hcp}</td>${TEES.map(t => `<td${cell(n, t)}>${h.yds[t]}</td>`).join('')}</tr>`; }
+      rows += `<tr><td${r}${hc(n)}><b>${n}</b></td><td${r}>${h.par}</td><td${r}>${h.hcp}</td>${TL.map(t => `<td${cell(n, t)}>${h.yds[t]}</td>`).join('')}</tr>`; }
     const s = hl.slice(a - 1, b);
-    return rows + `<tr><th>${lab}</th><th>${s.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${s.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>`;
+    return rows + `<tr><th>${lab}</th><th>${s.reduce((x, h) => x + h.par, 0)}</th><th></th>${TL.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${s.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>`;
   };
-  return `<table class="sc"><tr><th>#</th><th>Par</th><th>Hcp</th>${TEES.map(t => `<th${t === selTee ? ' class="x1"' : ''}${interactive ? ` onclick="toggleSel('tee','${t}')" style="cursor:pointer"` : ''}><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${dot[t]};border:1px solid #888"></span><br>${t}</th>`).join('')}</tr>
+  return `<table class="sc"><tr><th>#</th><th>Par</th><th>Hcp</th>${TL.map(t => `<th${t === selTee ? ' class="x1"' : ''}${interactive ?` onclick="toggleSel('tee','${t}')" style="cursor:pointer"` : ''}><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${dot[t]};border:1px solid #888"></span><br>${t}</th>`).join('')}</tr>
     ${half(1, 9, 'Out')}${half(10, 18, 'In')}
-    <tr><th>Tot</th><th>${hl.reduce((x, h) => x + h.par, 0)}</th><th></th>${TEES.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${hl.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>
-    <tr><td class="small mut">R/S</td><td></td><td></td>${TEES.map(t => `<td class="small mut${t === selTee ? ' x1' : ''}">${esc(cr.rating[t] || '—')}</td>`).join('')}</tr></table>`;
+    <tr><th>Tot</th><th>${hl.reduce((x, h) => x + h.par, 0)}</th><th></th>${TL.map(t => `<th${t === selTee ? ' class="x1"' : ''}>${hl.reduce((x, h) => x + h.yds[t], 0)}</th>`).join('')}</tr>
+    <tr><td class="small mut">R/S</td><td></td><td></td>${TL.map(t => `<td class="small mut${t === selTee ? ' x1' : ''}">${esc(cr.rating[t] || '—')}</td>`).join('')}</tr></table>`;
 }
 function renderStaticCard() {
   const cn = S ? S.course : pref.course, cr = C.courses[cn];
+  if (cardSel.tee && !teesOf(cn).includes(cardSel.tee)) cardSel.tee = null; // tee from the other club
   const pick = cardSel.tee && cardSel.hole ? `<div class="small" style="margin-top:6px">Hole <b>${cardSel.hole}</b> from the <b>${cardSel.tee}</b> tees: <b style="color:var(--acc)">${cr.holes[cardSel.hole - 1].yds[cardSel.tee]} yds</b> · par ${cr.holes[cardSel.hole - 1].par} · hcp ${cr.holes[cardSel.hole - 1].hcp}</div>` : '';
-  $('#main').innerHTML = `<div class="card"><div class="row">${['West', 'East'].map(c => `<button class="${cn === c ? 'on' : ''}" onclick="${S ? '' : `pref.course='${c}';savePref();`}render()" ${S && S.course !== c ? 'disabled style="opacity:.4"' : ''}>${c}</button>`).join('')}</div>
-    <div class="small mut" style="margin-top:6px">Bear Creek Golf Club — ${cn} course scorecard. Tap a tee color and a hole number to highlight them; tap again to clear.</div>${pick}</div>
+  $('#main').innerHTML = `<div class="card"><div class="row">${coursesOfClub(clubOf(cn)).map(c => `<button class="${cn === c ? 'on' : ''}" onclick="${S ? '' : `setCourse('${c}');`}render()" ${S && S.course !== c ? 'disabled style="opacity:.4"' : ''}>${c}</button>`).join('')}</div>
+    <div class="small mut" style="margin-top:6px">${esc(club().name)} — ${cn} course scorecard. Tap a tee color and a hole number to highlight them; tap again to clear.</div>${pick}</div>
   <div class="card" style="padding:6px">${scorecardTable(cn, cardSel.tee, cardSel.hole, true)}</div>
   <div class="card small">${esc(cr.blurb)}</div>`;
 }
@@ -984,7 +1013,7 @@ function renderCard() {
 }
 function shareCard() {
   const t = totals();
-  let s = `Bear Creek ${S.course} (${S.tee}) — ${S.mode === 'scramble' ? 'Scramble: ' + S.players.filter(Boolean).join(', ') : 'Solo'}\n${relStr(t.r)} (${t.str}) thru ${t.thru}\n`;
+  let s = `${club().short} ${S.course} (${S.tee}) — ${S.mode === 'scramble' ? 'Scramble: ' + S.players.filter(Boolean).join(', ') : 'Solo'}\n${relStr(t.r)} (${t.str}) thru ${t.thru}\n`;
   S.order.forEach(n => { const r = rel(n); if (r != null) s += `#${n} par ${H(n).par}: ${H(n).par + r} (${relStr(r)})  ${fmtDur(holeTime(n))}\n`; });
   if (navigator.share) navigator.share({text: s}).catch(() => {}); else { navigator.clipboard && navigator.clipboard.writeText(s); alert('Copied to clipboard'); }
 }
@@ -1024,6 +1053,11 @@ function renderInfo() {
   if (wx && wx.hourly) { const now = Date.now(); const idx = wx.hourly.time.map((t, i) => [new Date(t).getTime(), i]).filter(([t]) => t > now - 3600e3).slice(0, 6);
     hourly = `<table><tr><th class="l">Time</th><th>°F</th><th>Wind</th><th>Gust</th><th>Rain</th></tr>${idx.map(([t, i]) => `<tr><td class="l">${fmtClock(t)}</td><td>${Math.round(wx.hourly.temperature_2m[i])}</td><td>${Math.round(wx.hourly.wind_speed_10m[i])} ${compass(wx.hourly.wind_direction_10m[i])}</td><td>${Math.round(wx.hourly.wind_gusts_10m[i])}</td><td>${wx.hourly.precipitation_probability[i]}%</td></tr>`).join('')}</table>`; }
   const rho = c ? airDensity(c.temperature_2m, c.surface_pressure, c.relative_humidity_2m) : null;
+  const cl = club(), ck = clubOf(course()), dg = String(cl.phone || '').replace(/\D/g, ''), lk = CLUB_LINKS[ck]; // club contact (tel: from the digits)
+  const infoCard = `<div class="card"><b>${course()} course</b><div class="small">${esc(cr.blurb)}</div>
+    <table style="margin-top:6px"><tr><th class="l">Tee</th><th>Yards</th><th>Rating / Slope</th></tr>${teesOf(course()).map(t => `<tr><td class="l">${t}</td><td>${cr.holes.reduce((a, h) => a + h.yds[t], 0)}</td><td>${esc(cr.rating[t] || '')}</td></tr>`).join('')}</table>
+    <div class="small" style="margin-top:6px"><a style="color:var(--acc)" href="tel:${dg.length === 10 ? '+1' : ''}${dg}">📞 Pro shop ${esc(cl.phone)}</a> · ${esc(cl.addr)}${lk ? `<br>
+    <a style="color:var(--acc)" target="_blank" href="${lk.site}">Club website</a> · <a style="color:var(--acc)" target="_blank" href="${lk.tee}">Tee times</a>` : ''}</div></div>`;
   $('#main').innerHTML = `
   <div class="card"><b>Weather now</b> <span class="small mut">${wxAge()}</span>
     ${c ? `<div style="font-size:22px;font-weight:800;margin:4px 0">${Math.round(c.temperature_2m)}°F · wind ${Math.round(c.wind_speed_10m)} mph ${compass(c.wind_direction_10m)}, gusts ${Math.round(c.wind_gusts_10m)}</div>
@@ -1033,10 +1067,7 @@ function renderInfo() {
     • <b>Wind:</b> live wind vs. your shot line: +1% per mph into, −0.5% per mph helping, crosswind gives an aim-off. Scaled down for short shots.<br>
     • <b>Air:</b> temperature, humidity and barometric pressure → air density (≈0.55% distance per 1% density).<br>
     These are standard rules of thumb (like a slope rangefinder plus weather), not a launch monitor. Trust your eyes on gusty days.</div>
-  <div class="card"><b>${course()} course</b><div class="small">${esc(cr.blurb)}</div>
-    <table style="margin-top:6px"><tr><th class="l">Tee</th><th>Yards</th><th>Rating / Slope</th></tr>${TEES.map(t => `<tr><td class="l">${t}</td><td>${cr.holes.reduce((a, h) => a + h.yds[t], 0)}</td><td>${esc(cr.rating[t] || '')}</td></tr>`).join('')}</table>
-    <div class="small" style="margin-top:6px"><a style="color:var(--acc)" href="tel:+19724563200">📞 Pro shop 972-456-3200</a> · 3500 Bear Creek Ct, DFW Airport, TX<br>
-    <a style="color:var(--acc)" target="_blank" href="https://arcisgolf.com/clubs/bear-creek-golf-club/golf-course">Club website</a> · <a style="color:var(--acc)" target="_blank" href="https://bearcreektxpp.ezlinksgolf.com/index.html#/preSearch">Tee times</a></div></div>
+  ${infoCard}
   <div class="card"><b>Auto-advance holes</b> <span class="small mut">When you walk to the next tee, move to that hole and ask for the score of the one you just finished.</span><div class="row" style="margin-top:6px"><button class="${pref.autoAdv !== false ? 'on' : ''}" onclick="pref.autoAdv=pref.autoAdv===false;savePref();render()">${pref.autoAdv !== false ? '✅ On' : 'Off'}</button></div></div>
   <div class="card"><b>Offline maps</b> <span class="small mut">Save the satellite map on this phone so holes load instantly and work with no signal.</span><div class="row" style="margin-top:6px"><button class="sm" onclick="downloadOffline()">⬇️ Save maps offline</button><span class="small mut" id="offStat">${offlineStatus()}</span></div></div>
   <div class="card row">${S ? `<button onclick="endRound()" style="background:#5a2620">Finish / new round</button>` : ''}<button onclick="requestWake();alert(wakeLock?'Screen will stay on':'Screen-on not supported here')">☀️ Keep screen on</button></div>
@@ -1064,12 +1095,13 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab =
 (async function boot() {
   $('#main').innerHTML = '<div class="card">Loading course…</div>';
   try { C = await (await cachedFetch('course.json', 4000)).json(); } catch (e) { $('#main').innerHTML = '<div class="card">Could not load course data. Check your connection and reload.</div>'; return; }
-  loadDEM();
+  pref.tee = validTee(pref.course, pref.tee); // old prefs (West/East, any tee) keep working
   let cur = null; try { cur = localStorage.getItem(LS_KEY); } catch (e) {}
   if (cur && cur[0] === '{') { try { const old = JSON.parse(cur); if (old && old.order && !old.preview) { old.id = old.id || 'r' + (old.started || Date.now()); old.name = old.name || 'Round ' + new Date(old.started || Date.now()).toLocaleDateString(); S = old; save(); } } catch (e) {} cur = S ? S.id : null; }
   S = cur ? (rounds()[cur] || null) : null;
   if (S && (S.preview || S.ended)) S = null; // finished rounds open from the list
-  if (S) { viewHole = S.cur; if (S.started && !S.ended) requestWake(); }
+  if (S) { fixTee(S); viewHole = S.cur; if (S.started && !S.ended) requestWake(); }
+  loadDEM(); // the club of the round (or of the saved pref)
   startGPS(); render(); loadWx();
   setInterval(renderHeader, 5000);
   setInterval(liveUpdate, 2000);

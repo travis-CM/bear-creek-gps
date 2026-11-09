@@ -12,6 +12,12 @@ struct Hazard: Identifiable {
     let reach: Double, reachPl: Double, carry: Double, carryPl: Double
 }
 
+/// One club's elevation grid (uint16 samples) and its bounds/scale metadata.
+struct ElevationGrid {
+    let dem: [UInt16]
+    let meta: [String: Double]
+}
+
 /// Live distance + plays-like on the watch, from the watch's own GPS.
 /// Hole, pin and weather come from the iPhone app; the watch falls back to its bundled course data.
 final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, WCSessionDelegate, HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate {
@@ -43,8 +49,9 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     private var stream = false
     private var last: CLLocation?
     private var holes: [String: [[String: Any]]] = [:]
-    private var dem: [UInt16] = []
-    private var demMeta: [String: Double] = [:]
+    private var courseClub: [String: String] = [:]      // course name -> club id, from course_watch.json
+    private var club = "bc"                               // club the iPhone last sent (fallback only)
+    private var grids: [String: ElevationGrid] = [:]      // club id -> elevation grid
     private var started = false
     private var roaming = false
     private var active = true
@@ -54,24 +61,62 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         super.init()
         loadData()
         course = UserDefaults.standard.string(forKey: "course") ?? "West"
-        let h = UserDefaults.standard.integer(forKey: "hole")
+        club = UserDefaults.standard.string(forKey: "club") ?? "bc"
+        let h =UserDefaults.standard.integer(forKey: "hole")
         hole = (1...18).contains(h) ? h : 1
         updateLabel()
     }
 
     private func loadData() {
+        var clubFiles: [String: String] = [:]
+        var clubMeta: [String: [String: Double]] = [:]
         if let u = Bundle.main.url(forResource: "course_watch", withExtension: "json"),
            let d = try? Data(contentsOf: u),
            let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-            holes["West"] = j["West"] as? [[String: Any]] ?? []
-            holes["East"] = j["East"] as? [[String: Any]] ?? []
-            if let dm = j["dem"] as? [String: Any] {
-                for (k, v) in dm { if let n = v as? NSNumber { demMeta[k] = n.doubleValue } }
+            // every course key holds an array of hole dicts; `clubs` and `dem` are dicts and are skipped
+            for (k, v) in j {
+                if let arr = v as? [[String: Any]] { holes[k] = arr }
+            }
+            if let cs = j["clubs"] as? [String: Any] {
+                for (cid, cv) in cs {
+                    guard let cl = cv as? [String: Any] else { continue }
+                    for name in (cl["courses"] as? [String]) ?? [] { courseClub[name] = cid }
+                    if let dm = cl["dem"] as? [String: Any] {
+                        clubMeta[cid] = numericMeta(dm)
+                        clubFiles[cid] = (dm["file"] as? String) ?? "dem.bin"
+                    }
+                }
+            }
+            // Bear Creek fallback: the top-level dem (bundles without `clubs` are all Bear Creek)
+            if clubMeta["bc"] == nil, let dm = j["dem"] as? [String: Any] {
+                clubMeta["bc"] = numericMeta(dm)
+                clubFiles["bc"] = "dem.bin"
             }
         }
-        if let u = Bundle.main.url(forResource: "dem", withExtension: "bin"), let d = try? Data(contentsOf: u) {
-            dem = d.withUnsafeBytes { raw in Array(raw.bindMemory(to: UInt16.self)) }
+        for (cid, m) in clubMeta {
+            if let g = loadGrid(file: clubFiles[cid] ?? "dem.bin", meta: m) { grids[cid] = g }
         }
+    }
+
+    private func numericMeta(_ d: [String: Any]) -> [String: Double] {
+        var m: [String: Double] = [:]
+        for (k, v) in d { if let n = v as? NSNumber { m[k] = n.doubleValue } }
+        return m
+    }
+
+    private func loadGrid(file: String, meta: [String: Double]) -> ElevationGrid? {
+        let base = (file as NSString).deletingPathExtension
+        let ext = (file as NSString).pathExtension
+        guard let u = Bundle.main.url(forResource: base, withExtension: ext),
+              let d = try? Data(contentsOf: u) else { return nil }
+        let samples = d.withUnsafeBytes { raw in Array(raw.bindMemory(to: UInt16.self)) }
+        return ElevationGrid(dem: samples, meta: meta)
+    }
+
+    /// Elevation grid for the current course's club; Bear Creek's grid when the club is unknown or missing.
+    private func currentGrid() -> ElevationGrid? {
+        let cid = courseClub[course] ?? club
+        return grids[cid] ?? grids["bc"]
     }
 
     func start() {
@@ -211,9 +256,13 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         return nil
     }
 
+    /// Short course code shown before the hole number
+    private static let courseCodes: [String: String] = ["West": "W", "East": "E", "Hogan": "H", "Whitworth": "Wh"]
+
     private func updateLabel() {
         let par = (holeInfo()?["par"] as? NSNumber)?.intValue ?? 0
-        holeLabel = "\(course == "West" ? "W" : "E")\(hole) · Par \(par)"
+        let code = WatchModel.courseCodes[course] ?? String(course.prefix(1))
+        holeLabel = "\(code)\(hole) · Par \(par)"
     }
 
     // MARK: - Location
@@ -256,6 +305,8 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     }
 
     private func elevationFt(_ p: (Double, Double)) -> Double? {
+        guard let grid = currentGrid() else { return nil }
+        let dem = grid.dem, demMeta = grid.meta
         guard let n = demMeta["n"], let s = demMeta["s"], let w = demMeta["w"], let e = demMeta["e"],
               let rowsD = demMeta["rows"], let colsD = demMeta["cols"], !dem.isEmpty,
               p.0 <= n, p.0 >= s, p.1 >= w, p.1 <= e else { return nil }
@@ -430,6 +481,7 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     private func apply(_ ctx: [String: Any]) {
         guard !ctx.isEmpty else { return }
         if let c = ctx["course"] as? String { course = c; UserDefaults.standard.set(c, forKey: "course") }
+        if let c = ctx["club"] as? String { club = c; UserDefaults.standard.set(c, forKey: "club") }
         if let h = (ctx["hole"] as? NSNumber)?.intValue, (1...18).contains(h) { hole = h; UserDefaults.standard.set(h, forKey: "hole") }
         if let p = ctx["pin"] as? [NSNumber], p.count == 2 { pin = (p[0].doubleValue, p[1].doubleValue) }
         pinSet = (ctx["pinSet"] as? NSNumber)?.boolValue ?? false
