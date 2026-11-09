@@ -42,7 +42,7 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
 
     private let lm = CLLocationManager()
     private var course = "West"
-    private var hole = 1
+    private(set) var hole = 1
     private var pin: (Double, Double)?
     private var wx: [String: Double] = [:]
     private var wxTime: Date?
@@ -217,8 +217,9 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     func endWorkout() {
         guard let s = workout else { return }
         s.end()
-        builder?.endCollection(withEnd: Date()) { _, _ in
-            self.builder?.finishWorkout { _, _ in }
+        let b = builder   // capture: a new round could replace self.builder before this completes
+        b?.endCollection(withEnd: Date()) { _, _ in
+            b?.finishWorkout { _, _ in }
         }
         workout = nil
         DispatchQueue.main.async { self.workoutOn = false }
@@ -236,7 +237,9 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>) {}
     func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}
 
+    private var stepAt: Date?   // the phone's pushes don't override a hole picked on the watch for 60 s
     func step(_ d: Int) {
+        stepAt = Date()
         hole = (hole - 1 + d + 18) % 18 + 1
         pin = nil
         pinSet = false
@@ -294,12 +297,12 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
 
     // MARK: - Math (same rules as the phone app)
     private func meters(_ a: (Double, Double), _ b: (Double, Double)) -> Double {
-        let kx = 111320 * cos(a.0 * .pi / 180), ky = 110540.0
+        let kx = 111320 * cos(a.0 * .pi / 180), ky = 110920.0
         return hypot((b.1 - a.1) * kx, (b.0 - a.0) * ky)
     }
 
     private func bearing(_ a: (Double, Double), _ b: (Double, Double)) -> Double {
-        let kx = 111320 * cos(a.0 * .pi / 180), ky = 110540.0
+        let kx = 111320 * cos(a.0 * .pi / 180), ky = 110920.0
         let deg = atan2((b.1 - a.1) * kx, (b.0 - a.0) * ky) * 180 / .pi
         return (deg + 360).truncatingRemainder(dividingBy: 360)
     }
@@ -348,10 +351,10 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
 
     // local flat-earth x/y in meters around an origin
     private func xy(_ p: (Double, Double), _ o: (Double, Double)) -> (Double, Double) {
-        ((p.1 - o.1) * 111320 * cos(o.0 * .pi / 180), (p.0 - o.0) * 110540)
+        ((p.1 - o.1) * 111320 * cos(o.0 * .pi / 180), (p.0 - o.0) * 110920)
     }
     private func fromXY(_ v: (Double, Double), _ o: (Double, Double)) -> (Double, Double) {
-        (o.0 + v.1 / 110540, o.1 + v.0 / (111320 * cos(o.0 * .pi / 180)))
+        (o.0 + v.1 / 110920, o.1 + v.0 / (111320 * cos(o.0 * .pi / 180)))
     }
 
     private func computeHazards(_ from: (Double, Double), _ pin: (Double, Double)) -> [Hazard] {
@@ -405,9 +408,10 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     private func shareToComplication() {
         guard let d = WatchShare.defaults, let m = dist else { return }
         d.set(hole, forKey: "hole"); d.set(Int(m.rounded()), forKey: "mid")
-        d.set(Int((front?.0 ?? 0).rounded()), forKey: "front"); d.set(Int((back?.0 ?? 0).rounded()), forKey: "back")
+        if let f = front { d.set(Int(f.0.rounded()), forKey: "front") } else { d.removeObject(forKey: "front") }
+        if let b = back { d.set(Int(b.0.rounded()), forKey: "back") } else { d.removeObject(forKey: "back") }
         d.set(Date().timeIntervalSince1970, forKey: "ts")
-        if Date().timeIntervalSince(lastShare) > 20 { lastShare = Date(); WidgetCenter.shared.reloadAllTimelines() }
+        if Date().timeIntervalSince(lastShare) > 60 { lastShare = Date(); WidgetCenter.shared.reloadAllTimelines() }
     }
 
     /// front / back edge of the green along your line to the pin
@@ -458,11 +462,13 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     // MARK: - One-tap shot
     @Published var shotCount = -1      // -1 = no round running on the phone
     @Published var shotFlash = false
+    @Published var curHole = 0         // the phone's scoring hole; the shot count is for that hole
     func logShot() {
-        let msg: [String: Any] = ["cmd": "shot"]
-        if WCSession.default.isReachable { WCSession.default.sendMessage(msg, replyHandler: nil, errorHandler: nil) }
-        else { WCSession.default.transferUserInfo(msg) }
-        if shotCount >= 0 { shotCount += 1 }
+        let msg: [String: Any] = ["cmd": "shot", "hole": hole]   // log to the hole shown on the watch
+        if WCSession.default.isReachable {
+            WCSession.default.sendMessage(msg, replyHandler: nil, errorHandler: { _ in WCSession.default.transferUserInfo(msg) })
+        } else { WCSession.default.transferUserInfo(msg) }
+        if shotCount >= 0 && hole == curHole { shotCount += 1 }
         WKInterfaceDevice.current().play(.success)
         shotFlash = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { self.shotFlash = false }
@@ -482,9 +488,13 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         guard !ctx.isEmpty else { return }
         if let c = ctx["course"] as? String { course = c; UserDefaults.standard.set(c, forKey: "course") }
         if let c = ctx["club"] as? String { club = c; UserDefaults.standard.set(c, forKey: "club") }
-        if let h = (ctx["hole"] as? NSNumber)?.intValue, (1...18).contains(h) { hole = h; UserDefaults.standard.set(h, forKey: "hole") }
-        if let p = ctx["pin"] as? [NSNumber], p.count == 2 { pin = (p[0].doubleValue, p[1].doubleValue) }
-        pinSet = (ctx["pinSet"] as? NSNumber)?.boolValue ?? false
+        let watchPicked = stepAt.map { Date().timeIntervalSince($0) < 60 } ?? false
+        if !watchPicked {
+            if let h = (ctx["hole"] as? NSNumber)?.intValue, (1...18).contains(h) { hole = h; UserDefaults.standard.set(h, forKey: "hole") }
+            if let p = ctx["pin"] as? [NSNumber], p.count == 2 { pin = (p[0].doubleValue, p[1].doubleValue) }
+            pinSet = (ctx["pinSet"] as? NSNumber)?.boolValue ?? false
+        }
+        curHole = (ctx["cur"] as? NSNumber)?.intValue ?? 0
         if let w = ctx["wx"] as? [String: Any] {
             for (k, v) in w { if let n = v as? NSNumber { wx[k] = n.doubleValue } }
             wxTime = Date()

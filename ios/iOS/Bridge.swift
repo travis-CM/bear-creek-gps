@@ -13,20 +13,27 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
     private var lastState: [String: Any] = [:]
     private var lastWatchFix: Date?
     private var started = false
+    private var webReady = false
+    private var pendingCmds: [(String, Int)] = []
+
+    override init() {
+        super.init()
+        // set up early: a lock-screen button or the Watch can launch the app in the background before any view appears
+        LiveCommands.handler = { [weak self] c in DispatchQueue.main.async { self?.command(c) } }
+        if WCSession.isSupported() {
+            WCSession.default.delegate = self
+            WCSession.default.activate()
+        }
+    }
 
     func start() {
         guard !started else { return }
         started = true
-        LiveCommands.handler = { [weak self] c in self?.command(c) }
         lm.delegate = self
         applyGPSMode()
         lm.activityType = .fitness
         lm.pausesLocationUpdatesAutomatically = false
         lm.requestWhenInUseAuthorization()
-        if WCSession.isSupported() {
-            WCSession.default.delegate = self
-            WCSession.default.activate()
-        }
     }
 
     // MARK: - Location
@@ -55,7 +62,8 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let l = locations.last, l.horizontalAccuracy >= 0 else { return }
+        guard let l = locations.last, l.horizontalAccuracy >= 0, l.horizontalAccuracy <= 100,
+              abs(l.timestamp.timeIntervalSinceNow) < 15 else { return }
         let watchStale = lastWatchFix.map { Date().timeIntervalSince($0) > 20 } ?? true
         if source == "phone" || watchStale {
             sendLocation(l.coordinate.latitude, l.coordinate.longitude, l.horizontalAccuracy, "phone")
@@ -65,11 +73,14 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
 
     private func sendLocation(_ lat: Double, _ lon: Double, _ acc: Double, _ src: String) {
+        guard lat.isFinite, lon.isFinite, acc.isFinite, acc >= 0 else { return }
         js("window.bcNative && window.bcNative.loc(\(lat),\(lon),\(acc),'\(src)')")
     }
 
-    func command(_ name: String) {
-        js("window.bcNative && window.bcNative.cmd('\(name)')")
+    func command(_ name: String, hole: Int = 0) {
+        guard ["shot", "next", "undo"].contains(name), (0...18).contains(hole) else { return }
+        if webReady && webView != nil { js("window.bcNative && window.bcNative.cmd('\(name)',\(hole))") }
+        else { pendingCmds.append((name, hole)) }   // replayed when the web app reports ready
     }
 
     private func js(_ script: String) {
@@ -81,7 +92,7 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
         case "source":
-            if let v = body["value"] as? String {
+            if let v = body["value"] as? String, v == "phone" || v == "watch" {
                 source = v
                 UserDefaults.standard.set(v, forKey: "gpsSource")
                 applyGPSMode()
@@ -98,8 +109,11 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
         case "endlive":
             endActivity()
         case "ready":
+            webReady = true
             announce()
             pushWatch()
+            let q = pendingCmds; pendingCmds = []
+            q.forEach { command($0.0, hole: $0.1) }
         default:
             break
         }
@@ -113,7 +127,8 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
         DispatchQueue.main.async {
             guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
             let content = ActivityContent(state: st, staleDate: Date().addingTimeInterval(120))
-            if let a = self.activity ?? Activity<YardsAttributes>.activities.first {
+            let alive = { (a: Activity<YardsAttributes>) in a.activityState == .active || a.activityState == .stale }
+            if let a = [self.activity].compactMap({ $0 }).first(where: alive) ?? Activity<YardsAttributes>.activities.first(where: alive) {
                 self.activity = a
                 Task { await a.update(content) }
             } else if UIApplication.shared.applicationState == .active {
@@ -155,12 +170,18 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
     func sessionDidDeactivate(_ session: WCSession) { session.activate() }
     func sessionWatchStateDidChange(_ session: WCSession) { DispatchQueue.main.async { self.announce() } }
 
-    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
-        if let c = userInfo["cmd"] as? String { DispatchQueue.main.async { self.command(c) } }
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
+        if let c = userInfo["cmd"] as? String {
+            let h = (userInfo["hole"] as? NSNumber)?.intValue ?? 0
+            DispatchQueue.main.async { self.command(c, hole: h) }
+        }
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        if let c = message["cmd"] as? String { DispatchQueue.main.async { self.command(c) }; return }
+        if let c = message["cmd"] as? String {
+            let h = (message["hole"] as? NSNumber)?.intValue ?? 0
+            DispatchQueue.main.async { self.command(c, hole: h) }; return
+        }
         guard let lat = (message["lat"] as? NSNumber)?.doubleValue,
               let lon = (message["lon"] as? NSNumber)?.doubleValue else { return }
         let acc = (message["acc"] as? NSNumber)?.doubleValue ?? 10

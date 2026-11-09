@@ -24,6 +24,7 @@ jobs:
       - name: Icons, watch data, Xcode project
         run: |
           python3 ios/make_assets.py
+          test -f ios/Watch/course_watch.json -a -f ios/Watch/dem.bin -a -f ios/Watch/dem_tcc.bin || { echo "Watch data missing"; exit 1; }
           cd ios && xcodegen generate
       - name: Compile check (no signing)
         if: env.HAS_KEY != 'true'

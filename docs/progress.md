@@ -12,3 +12,4 @@
 ## Log
 - 2026-11-06: Orchestrator-and-workers setup added (CLAUDE.md, docs, builder/reviewer agents, reflect skill).
 - 2026-11-08: Trophy Club CC added. Scorecards from the club site (invitedclubs.com), typos fixed against GolfPass. Hogan 1-17 from OSM; Hogan 18 and all of Whitworth traced (tcc_traced.json) from Esri imagery, the club's hole maps and a numbered course print.
+- 2026-11-09: 10-agent audit. Fixed: scoring edge cases, corrupt-storage boot, offline (Leaflet + dem_tcc precached), weather (stale data, club-switch race, station elevations), map flyover crash, iPhone bridge (background commands, dead Live Activity, input checks), Watch (hole picked on watch, shot to watch hole, retries, complication), CI checks.

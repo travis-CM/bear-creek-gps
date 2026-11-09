@@ -49,7 +49,7 @@ struct WatchView: View {
                     .id("top")
                     if m.shotCount >= 0 {
                         Button { m.logShot() } label: {
-                            Text(m.shotFlash ? "✓ Shot \(m.shotCount)" : "+ Shot (\(m.shotCount))")
+                            Text(m.hole != m.curHole ? (m.shotFlash ? "✓ Shot" : "+ Shot") : (m.shotFlash ? "✓ Shot \(m.shotCount)" : "+ Shot (\(m.shotCount))"))
                                 .font(.system(size: 18, weight: .heavy)).frame(maxWidth: .infinity).padding(.vertical, 6)
                         }
                         .tint(Color(red: 1.0, green: 0.60, blue: 0.0)).buttonStyle(.borderedProminent).foregroundStyle(.black)

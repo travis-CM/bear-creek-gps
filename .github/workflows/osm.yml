@@ -26,7 +26,7 @@ jobs:
           Q='[out:json][timeout:120];way[waterway](32.845,-97.075,32.875,-97.04);out geom tags;'
           for i in 1 2 3; do
             for U in https://overpass-api.de/api/interpreter https://maps.mail.ru/osm/tools/overpass/api/interpreter https://overpass.kumi.systems/api/interpreter; do
-              curl -sS -m 150 --data-urlencode "data=$Q" "$U" -o water.new && python3 -c "import json;json.load(open('water.new'))['elements']" && mv water.new water.json && break 2
+              curl -sS -m 150 --data-urlencode "data=$Q" "$U" -o water.new && python3 -c "import json;d=json.load(open('water.new'));assert len(d['elements'])>=15 and 'remark' not in d" && mv water.new water.json && break 2
             done
             sleep 20
           done
@@ -47,7 +47,7 @@ jobs:
             curl -sS -m 180 -o dem_tcc.tif "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage?bbox=-97.210,32.988,-97.165,33.016&bboxSR=4326&imageSR=4326&size=1100,700&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation&f=image" && python3 -c "from PIL import Image;Image.open('dem_tcc.tif')" && break
             sleep 15
           done
-          curl -sS -m 60 -o logo.svg "https://arcisgolf.com/hubfs/Top%20Nav-Bear%20Creek%20Logo-2.svg" || true
+          curl -fsS -m 60 -o logo.new "https://arcisgolf.com/hubfs/Top%20Nav-Bear%20Creek%20Logo-2.svg" && grep -q "<svg" logo.new && mv logo.new logo.svg; rm -f logo.new
           python3 build.py
           rm -f dem.tif dem_tcc.tif
           test -f dem_tcc.bin || echo 'WARNING: no Trophy Club elevation'
