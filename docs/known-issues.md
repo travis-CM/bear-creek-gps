@@ -39,3 +39,9 @@
 - The 1 m green grids and the 5 m DEM disagree by up to ~6 m on 5 greens (East 2 worst); a shot from off the green to the pin can mix sources (~7 yd of plays-like).
 - `applyPinText` has no end anchor ("1 225" reads as depth 22) and does not clamp depth to the green.
 - In the sandbox, Open-Meteo fails CORS through the proxy; on GitHub Pages it works. Not an app bug.
+
+## Working in this repo (gotchas for the orchestrator and workers)
+- Top-level `let`/`const` in app.js (`C`, `S`, `gps`, `pref`, `gpsCand`…) are not `window` properties. In a Playwright harness test them by bare name (`typeof C !== 'undefined' && C`), not `window.C`.
+- `hazardsFrom(from, h)` takes the pin from the *current* course (`pinOf(h.n)`): checking an East hole while a West round is open gives nonsense. Set `S.course` first.
+- Line-number-based test harnesses (`L.slice(a, b)` on app.js) die on the first edit. Extract functions by name or run the real app in headless Chromium.
+- A scenario harness for the web app lives in the session scratchpad (`verify.js`, 31 checks); it is not in the repo yet (see reflect proposals, 2026-11-09).
