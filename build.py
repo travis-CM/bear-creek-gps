@@ -216,9 +216,12 @@ if 'Hogan' in out['courses'] and (os.path.exists('dem_tcc.tif') or os.path.exist
     if os.path.exists('dem_tcc.tif'):  # fresh lidar; otherwise keep the committed dem_tcc.bin
         a = np.array(Image.open('dem_tcc.tif'), dtype=np.float32)
         b = np.array(Image.fromarray(a).resize((TCC_DEM['cols'], TCC_DEM['rows']), Image.BILINEAR), dtype=np.float32)
-        assert 100 < float(b.min()) and float(b.max()) < 300, ('dem_tcc.tif looks wrong, keeping the committed dem_tcc.bin', float(b.min()), float(b.max()))
-        np.clip(np.round((b - TCC_DEM['base']) * 100), 0, 65535).astype('<u2').tofile('dem_tcc.bin')
-        print('dem tcc', b.min(), b.max(), file=sys.stderr)
+        if 100 < float(b.min()) and float(b.max()) < 300:
+            np.clip(np.round((b - TCC_DEM['base']) * 100), 0, 65535).astype('<u2').tofile('dem_tcc.bin')
+            print('dem tcc', b.min(), b.max(), file=sys.stderr)
+        else:
+            print('WARNING: dem_tcc.tif looks wrong (nodata or garbage), keeping the committed dem_tcc.bin', float(b.min()), float(b.max()), file=sys.stderr)
+    if not os.path.exists('dem_tcc.bin'): sys.exit('no usable Trophy Club elevation grid')
     out['clubs']['tcc'] = {'name': 'Trophy Club Country Club', 'short': 'Trophy Club', 'place': 'Trophy Club, TX',
                            'addr': '500 Trophy Club Dr, Trophy Club, TX 76262', 'phone': '817-837-1900',
                            'courses': [c for c in ('Hogan', 'Whitworth') if c in out['courses']], 'dem': dict(TCC_DEM, file='dem_tcc.bin')}
@@ -259,7 +262,9 @@ for cname, cdata in out['courses'].items():
     for h in cdata['holes']:
         gz = green_grid(h['green'])
         if gz: h['gz'] = gz; ok += 1
-        elif (cname, h['n']) in prev: h['gz'] = prev[(cname, h['n'])]; kept += 1
+        elif (cname, h['n']) in prev:  # reuse only if the old grid still covers this green (the outline may have moved)
+            pg = prev[(cname, h['n'])]; la = [p[0] for p in h['green']]; lo = [p[1] for p in h['green']]
+            if pg['s'] <= min(la) and pg['n'] >= max(la) and pg['w'] <= min(lo) and pg['e'] >= max(lo): h['gz'] = pg; kept += 1
 print('green grids', ok, 'fresh,', kept, 'kept from the last build', file=sys.stderr)
 total = sum(len(c['holes']) for c in out['courses'].values())
 if ok + kept < total: print('WARNING: %d holes have no green grid' % (total - ok - kept), file=sys.stderr)

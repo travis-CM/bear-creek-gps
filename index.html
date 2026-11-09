@@ -56,10 +56,11 @@ nav.tabs button.on{color:var(--acc);background:none;font-weight:700}
 .dist.nogps{outline:2px solid var(--acc2);outline-offset:-2px;border-radius:12px}
 .dist.nogps .mid .num{color:var(--mut)}
 .dist.nogps .lab{color:var(--acc)}
-.strip{display:flex;align-items:center;gap:6px;margin:6px 12px 0;padding:6px 10px;background:var(--card);border-radius:10px;font-size:16px;color:var(--mut);white-space:nowrap;overflow:hidden}
+.strip{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:6px 12px 0;padding:6px 10px;background:var(--card);border-radius:10px;font-size:16px;color:var(--mut)}
+.strip>span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .strip b{color:var(--fg);font-size:18px}
-.strip.tgt{color:var(--warn)}
-.strip button{margin-left:auto;flex:0 0 auto}
+.strip.aim{color:var(--warn)}
+.strip button{flex:0 0 auto}
 .dist .pl{font-size:18px;color:var(--acc);font-weight:600}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .chip{background:var(--card2);border-radius:20px;padding:4px 10px;font-size:14px;color:var(--mut)}

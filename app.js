@@ -511,7 +511,7 @@ function shotDist(n, i) { // {txt} distance this shot travelled: start (tee / pr
 }
 function completeHole() {
   const n = viewHole, st = hs(n);
-  st.done = true; st.endTs = st.endTs || Date.now(); if (!st.startTs) st.startTs = S.started;
+  st.done = true; st.endTs = st.endTs || Date.now(); if (!st.startTs) st.startTs = S.started; if (S.pendingScore === n) S.pendingScore = null;
   if (!counted(st) && st.adj == null) st.adj = 0;
   if (n !== S.cur) { save(); render(); return; } // scoring a hole you browsed to: record it, but the round stays where it is
   const i = S.order.indexOf(n);
@@ -909,8 +909,9 @@ function renderBanner() {
   let html = '';
   if (saveErr) html += `<div class="banner" style="background:var(--bad);color:#fff"><span style="flex:1">⚠️ Phone storage is full — scores are NOT being saved. Delete old rounds or the pin photo.</span></div>`;
   if (bootErr) html += `<div class="banner"><span style="flex:1">${esc(bootErr)}</span><button class="sm" onclick="bootErr='';render()">✕</button></div>`;
-  if (S && S.started && !S.ended && S.pendingScore && S.holes[S.pendingScore] && !S.holes[S.pendingScore].done && !$('#modal').innerHTML) {
-    html += `<div class="banner"><span style="flex:1">Hole ${S.pendingScore} has no score yet</span><button class="sm" onclick="scorePrompt(${S.pendingScore})">Enter</button></div>`;
+  if (S && S.started && !S.ended && !$('#modal').innerHTML) { // every hole already left behind with no score: the first one gets the reminder
+    const i = S.order.indexOf(S.cur), miss = S.order.slice(0, Math.max(0, i)).filter(n => { const st = S.holes[n]; return !st || (!st.done && !st.manual); });
+    if (miss.length) html += `<div class="banner"><span style="flex:1">Hole ${miss[0]} has no score yet${miss.length > 1 ? ' (+' + (miss.length - 1) + ' more)' : ''}</span><button class="sm" onclick="scorePrompt(${miss[0]})">Enter</button></div>`;
   }
   if (S && S.started && !S.ended && S.gpsHole && S.gpsHole !== S.cur && !(S.holes[S.gpsHole] || {}).done && gps && onCourse(gps.p)) {
     html += `<div class="banner"><span style="flex:1">GPS says you're on hole ${S.gpsHole}</span><button class="sm" onclick="goHole(${S.gpsHole},true)">Switch</button><button class="sm" onclick="S.gpsHole=S.cur;save();render()">✕</button></div>`;
@@ -929,13 +930,13 @@ function liveHtml(part) {
   if (part === 'top') {
     // the big card says plainly where its number is measured from: a live fix, a spot you tapped, or the tee because GPS is missing, stale or on another hole
     const noFix = !!(S && S.started && !gpsOn && !manualMe);
-    const lab = gpsOn ? '<span class="liveDot"></span>Live distance' : manualMe ? 'From your tapped spot' : !gps ? 'NO GPS · from the tee' : Date.now() - gps.ts >= gpsMaxAge() ? 'GPS STALE · from the tee' : 'NOT ON THIS HOLE · from the tee';
+    const lab = gpsOn ? '<span class="liveDot"></span>Live distance' : manualMe ? 'From your tapped spot' : 'From the tee · ' + (!gps ? 'no GPS' : Date.now() - gps.ts >= gpsMaxAge() ? 'GPS stale' : 'other hole');
     const wxTxt = wx ? (wx.aged ? `weather ${wx.ageMin}m old` : 'wind ' + (pl.head > 2 ? 'into' : pl.head < -2 ? 'helping' : 'cross')) : (wxErr ? 'no weather · slope only' : 'weather loading');
     const z = hz[0], hzTxt = z ? ` · ${z.t === 'b' ? '🟨' : '🟦'} <b>${Math.round(z.reach)}</b>${z.carry != null ? '/' + Math.round(z.carry) : ''}` : '';
-    const tgt = target ? `<div class="strip tgt">🎯 to target <b>${Math.round(yds(from, target))}</b> · then <b>${Math.round(yds(target, pin))}</b> to the pin <button class="sm" onclick="target=null;render()">✕</button></div>` : '';
-    return (NATIVE ? `<div class="row" style="padding:6px 12px 0;gap:6px"><span class="small mut" style="flex:0 0 auto">GPS source</span><button class="sm ${gpsSrc === 'phone' ? 'on' : ''}" onclick="setGpsSource('phone')">📱 Phone</button><button class="sm ${gpsSrc === 'watch' ? 'on' : ''}" onclick="setGpsSource('watch')">⌚ Watch${watchPaired ? '' : ' (not linked)'}</button></div>` : '') + `  <div class="dist big ${noFix ? 'nogps' : ''}" style="margin-top:6px"><div class="mid"><div class="lab">${lab} · ${st.pin ? 'pin' : 'middle'}</div><div class="num">${Math.round(mid)}</div><div class="small mut">yards</div></div>
+    const tgt = target ? `<div class="strip aim"><span>🎯 to target <b>${Math.round(yds(from, target))}</b> · then <b>${Math.round(yds(target, pin))}</b> to the pin</span><button class="sm" onclick="target=null;render()">✕</button></div>` : '';
+    return (NATIVE ? `<div class="row" style="padding:6px 12px 0;gap:6px"><span class="small mut" style="flex:0 0 auto">GPS source</span><button class="sm ${gpsSrc === 'phone' ? 'on' : ''}" onclick="setGpsSource('phone')">📱 Phone</button><button class="sm ${gpsSrc === 'watch' ? 'on' : ''}" onclick="setGpsSource('watch')">⌚ Watch${watchPaired ? '' : ' (not linked)'}</button></div>` : '') + `  <div class="dist big ${noFix ? 'nogps' : ''}" style="margin-top:6px"><div class="mid"><div class="lab">${lab}${noFix ? '' : ' · ' + (st.pin ? 'pin' : 'middle')}</div><div class="num">${Math.round(mid)}</div><div class="small mut">yards</div></div>
     <div class="pls"><div class="lab">Plays like</div><div class="num">${Math.round(pl.total)}</div><div class="small mut">${pl.dh != null ? (pl.dh >= 0 ? '▲' : '▼') + Math.abs(Math.round(pl.dh)) + ' ft · ' : ''}${wxTxt}</div></div></div>
-  <div class="strip">H${n} · Par ${h.par} · F <b>${Math.round(fb.f)}</b> · B <b>${Math.round(fb.b)}</b>${hzTxt}</div>${tgt}
+  <div class="strip"><span>H${n} · Par ${h.par} · F <b>${Math.round(fb.f)}</b> · B <b>${Math.round(fb.b)}</b>${hzTxt}</span></div>${tgt}
 `; // the big numbers need none of the layup / weather work below
   }
   let tgtHtml = '';
@@ -1019,7 +1020,7 @@ function renderHole() {
   drawMap();
   if (fresh) setTimeout(() => { if (map) { map.invalidateSize(); fitHole(true); } }, 80);
 }
-function bump(d) { const n = viewHole, st = hs(n); const base = rel(n) != null ? rel(n) : 0; st.adj = base + d; st.manual = true; save(); render(); }
+function bump(d) { const n = viewHole, st = hs(n); const base = rel(n) != null ? rel(n) : 0; st.adj = base + d; st.manual = true; if (S.pendingScore === n) S.pendingScore = null; save(); render(); }
 function delShot(n, i) { const st = hs(n); st.shots.splice(i, 1); st.manual = false; st.adj = null; save(); render(); } // no stale ± left behind to show as a score
 function gimme() { // counted stroke, credited to no one, then close the hole
   const n = viewHole, st = hs(n); st.manual = false;

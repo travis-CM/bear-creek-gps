@@ -109,6 +109,8 @@ const ok = (name, cond, info) => { (cond ? logs : fails).push(`${cond ? 'PASS' :
   r = await run(() => { S.ended = Date.now(); tab = 'card'; render(); const btn = /Reopen round/.test(document.querySelector('#main').textContent); reopenRound(); const re = { ended: S.ended, tab };
     const n = S.cur, i = S.order.indexOf(n); S.holes[n] = { shots: [], adj: null, done: false }; advanceFrom(n); const prompt = !!document.querySelector('#modal .sheet'); closeModal(); render(); const banner = document.querySelector('#banner').textContent; return { btn, re, prompt, banner, pend: S.pendingScore, n }; });
   ok('reopen works; "Later" on a strokeless hole leaves a reminder banner', r.btn && r.re.ended === null && r.re.tab === 'hole' && r.prompt && /no score yet/.test(r.banner) && r.pend === r.n, r);
+  r = await run(() => { const n = S.pendingScore || S.order[S.order.indexOf(S.cur) - 1]; goHole(n, false); bump(1); const gone = !/no score yet/.test(document.querySelector('#banner').textContent); goHole(S.cur, false); return { gone }; });
+  ok('a ± entry clears the reminder', r.gone, r);
   // F: no layup on par 3s; green slope only near the green; top strip present; no-GPS state visible
   r = await run(() => { const h3 = C.courses.West.holes.find(h => h.par === 3); const li = layupInfo(teePos(h3, 'Blue'), h3.n); goHole(h3.n, false); gps = null; manualMe = null; const top = liveHtml('top'), body = liveHtml(); const far = /Green slope/.test(body);
     manualMe = fromXY([0, -25], greenC(h3)); const near = /Green slope/.test(liveHtml()); manualMe = null; return { layup: !!li.layup, strip: /H\d+ · Par/.test(top) && /F <b>/.test(top), nogps: /nogps/.test(top) && /from the tee/i.test(top), far, near }; });
