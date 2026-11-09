@@ -1,0 +1,37 @@
+name: Fetch Trophy Club data
+on:
+  push:
+    branches: [tcc-data]
+    paths: ['.github/workflows/tcc-fetch.yml']
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: OSM golf features + water + waterways
+        run: |
+          B='32.975,-97.215,33.025,-97.150'
+          Q="[out:json][timeout:180];(way[golf]($B);relation[golf]($B);way[natural=water]($B);way[leisure=golf_course]($B);relation[leisure=golf_course]($B););out geom tags;"
+          W="[out:json][timeout:120];way[waterway]($B);out geom tags;"
+          for U in https://overpass-api.de/api/interpreter https://maps.mail.ru/osm/tools/overpass/api/interpreter https://overpass.kumi.systems/api/interpreter; do
+            curl -sS -m 200 --data-urlencode "data=$Q" "$U" -o tcc_osm.json && python3 -c "import json;print(len(json.load(open('tcc_osm.json'))['elements']))" && break
+          done
+          for U in https://overpass-api.de/api/interpreter https://maps.mail.ru/osm/tools/overpass/api/interpreter https://overpass.kumi.systems/api/interpreter; do
+            curl -sS -m 150 --data-urlencode "data=$W" "$U" -o tcc_water.json && python3 -c "import json;print(len(json.load(open('tcc_water.json'))['elements']))" && break
+          done
+          python3 - <<'PY'
+          import json, collections
+          e = json.load(open('tcc_osm.json'))['elements']
+          c = collections.Counter(x['tags'].get('golf') or x['tags'].get('leisure') or x['tags'].get('natural') for x in e)
+          print(c)
+          for x in e:
+              t = x['tags']
+              if t.get('golf') == 'hole' or t.get('leisure') == 'golf_course':
+                  print(x['type'], x['id'], {k: v for k, v in t.items() if k in ('name','ref','par','handicap','golf:course:name','golf')})
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
+          git add tcc_osm.json tcc_water.json; git commit -m "Trophy Club OSM data" || true; git push
