@@ -29,7 +29,7 @@
 - Watch `step()` changes the Watch's hole locally and never tells the phone; the next phone context snaps it back, and a "+ Shot" tap is logged on the phone's current hole, not the one the Watch shows.
 - `sendMessage` for a shot has no error handler: a failure is silent while the Watch increments the count and plays the success haptic.
 - No stale/no-fix indicator: an old yardage stays big and green. `didFailWithError` is empty.
-- `pausesLocationUpdatesAutomatically` not set to false; no workout recovery on relaunch; 50 Hz device-motion for the whole round (battery).
+- `pausesLocationUpdatesAutomatically` not set to false; no workout recovery on relaunch. (Motion sensing is now 20 Hz and only while the screen is on, since the battery commit on main.)
 - Complication timeline has one entry marked live at build time; `reloadAllTimelines()` every 20 s burns the budget.
 - Front/back definitions differ slightly from the phone (front is 0 when standing on the green on the phone, not on the Watch).
 

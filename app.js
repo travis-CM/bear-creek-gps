@@ -314,11 +314,11 @@ function pushNativeState() { // tell the iPhone app (and through it the Watch) w
     const b = inside(from, h.green) ? polyFar(from, h.green) * YD : hits.length >= 2 ? hits[hits.length - 1] * YD : polyFar(from, h.green) * YD;
     const pl = playsLike(from, pin), ex = pl.total - pl.d;
     const lv = {type: 'live', hole: n, par: h.par, mid: Math.round(pl.d), plays: Math.round(pl.total), front: Math.round(f), back: Math.round(b), fPl: Math.round(f + ex), bPl: Math.round(b + ex), shots: S.holes[n] ? counted(S.holes[n]) : 0};
-    const lk = JSON.stringify(lv); if (lk !== lastLive) { lastLive = lk; postNative(lv); }
+    const lk = JSON.stringify(lv), nowT = Date.now(); if (lk !== lastLive && nowT - lastLiveT > 4000) { lastLive = lk; lastLiveT = nowT; postNative(lv); } // at most one lock-screen update per 4 s
   } catch (e) {}
 }
-let lastLive = '';
-function endLive() { lastLive = ''; postNative({type: 'endlive'}); }
+let lastLive = '', lastLiveT = 0;
+function endLive() { lastLive = ''; lastLiveT = 0; postNative({type: 'endlive'}); }
 function startGPS() {
   if (NATIVE) { postNative({type: 'ready'}); return; } // the iPhone app feeds GPS (phone or watch) through bcNative.loc
   if (!navigator.geolocation) { gpsErr = 'GPS not supported'; return; }
@@ -344,8 +344,9 @@ function trackHoleByGPS() {
   if (!S || !S.started || S.ended || !gps || !onCourse(gps.p)) return;
   if (gps.acc > 30) return; // a weak fix (tunnel, cold start, pocket) must not move the round
   const now = Date.now(), n = nearestHole(gps.p);
-  // off every hole (cart path, between tees) or a gap in fixes: the dwell starts over, so one old fix cannot confirm a hole later
-  if (!n || (gpsCand && now - gpsCand.last > 15e3)) gpsCand = null;
+  // off every hole (cart path, between tees) or a long gap in fixes: the dwell starts over, so one old fix cannot confirm a hole minutes later
+  // (60 s, not less: the phone's 3 m distance filter means fixes can pause while you stand still on the tee)
+  if (!n || (gpsCand && now - gpsCand.last > 60e3)) gpsCand = null;
   if (!n) return;
   if (!gpsCand || gpsCand.n !== n) { gpsCand = {n, ts: now, last: now}; return; }
   gpsCand.last = now;
@@ -875,6 +876,7 @@ function liveHtml(part) {
 }
 let lastLiveHtml = '', lastTopHtml = '';
 function liveUpdate() { // called on every GPS fix: refresh numbers + map overlays, keep the rest of the screen untouched
+  if (document.hidden) { if (S && NATIVE) pushNativeState(); return; } // screen locked / app backgrounded: skip all drawing, just feed the lock screen + Watch
   if (tab !== 'hole' || !S || !$('#live')) return;
   // only rewrite what changed: replacing the DOM under a finger swallows the tap (GPS source buttons, target ✕)
   const a = liveHtml(), b = liveHtml('top');

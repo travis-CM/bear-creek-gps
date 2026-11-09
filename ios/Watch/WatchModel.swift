@@ -47,6 +47,7 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
     private var demMeta: [String: Double] = [:]
     private var started = false
     private var roaming = false
+    private var active = true
     private let yd = 1.09361
 
     override init() {
@@ -88,17 +89,34 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         }
         fetchWeather()
         startWorkout()
-        ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
-        if motion.isDeviceMotionAvailable {
-            motion.deviceMotionUpdateInterval = 1.0 / 50
-            motion.startDeviceMotionUpdates(to: .main) { [weak self] dm, _ in
-                guard let self = self, let r = dm?.rotationRate else { return }
-                // a golf swing spins the wrist far faster than walking or riding
-                if sqrt(r.x * r.x + r.y * r.y + r.z * r.z) > 12, Date().timeIntervalSince(self.lastSwing) > 3 {
-                    self.lastSwing = Date()
-                    self.resetView()
+        setActive(true)
+    }
+
+    /// Screen on (wrist raised) = full speed; wrist down = ticker and swing sensor off, GPS relaxed. Big battery saver over a round.
+    func setActive(_ on: Bool) {
+        active = on
+        ticker?.invalidate(); ticker = nil
+        motion.stopDeviceMotionUpdates()
+        if on {
+            ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+            if motion.isDeviceMotionAvailable {
+                motion.deviceMotionUpdateInterval = 1.0 / 20
+                motion.startDeviceMotionUpdates(to: .main) { [weak self] dm, _ in
+                    guard let self = self, let r = dm?.rotationRate else { return }
+                    // a golf swing spins the wrist far faster than walking or riding
+                    if sqrt(r.x * r.x + r.y * r.y + r.z * r.z) > 12, Date().timeIntervalSince(self.lastSwing) > 3 {
+                        self.lastSwing = Date()
+                        self.resetView()
+                    }
                 }
             }
+            lm.desiredAccuracy = kCLLocationAccuracyBest
+            lm.distanceFilter = roaming ? 5 : kCLDistanceFilterNone
+        } else if stream {          // phone is showing our GPS: keep accuracy, just fewer fixes
+            lm.distanceFilter = 5
+        } else {
+            lm.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+            lm.distanceFilter = 15
         }
     }
 
@@ -134,7 +152,10 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         do {
             let s = try HKWorkoutSession(healthStore: health, configuration: cfg)
             let b = s.associatedWorkoutBuilder()
-            b.dataSource = HKLiveWorkoutDataSource(healthStore: health, workoutConfiguration: cfg)
+            let ds = HKLiveWorkoutDataSource(healthStore: health, workoutConfiguration: cfg)
+            ds.disableCollection(for: HKQuantityType(.heartRate))   // not needed: saves battery
+            ds.disableCollection(for: HKQuantityType(.activeEnergyBurned))
+            b.dataSource = ds
             s.delegate = self
             b.delegate = self
             workout = s
@@ -208,9 +229,9 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         // power: walking/riding between shots needs fewer fixes; standing at the ball gets full accuracy and every fix
         let sp = l.speed >= 0 ? l.speed : 0
         if sp > 1.3, !roaming {
-            roaming = true; manager.distanceFilter = 5
+            roaming = true; if active { manager.distanceFilter = 5 }
         } else if sp < 1.0, roaming {
-            roaming = false; manager.distanceFilter = kCLDistanceFilterNone
+            roaming = false; if active { manager.distanceFilter = kCLDistanceFilterNone }
         }
         recompute()
         if stream, WCSession.isSupported(), WCSession.default.isReachable {
