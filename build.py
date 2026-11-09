@@ -13,7 +13,7 @@ def P(e, n=6):
     return [[round(p['lat'], n), round(p['lon'], n)] for p in g]
 
 LAT0, LON0 = 32.86, -97.06
-KX = 111320 * math.cos(math.radians(LAT0)); KY = 110540
+KX = 111320 * math.cos(math.radians(LAT0)); KY = 110920  # m per degree of latitude at 33 N (same constant as app.js and the Watch)
 def set_origin(lat, lon):
     global LAT0, LON0, KX
     LAT0, LON0 = lat, lon; KX = 111320 * math.cos(math.radians(LAT0))
@@ -176,7 +176,7 @@ if os.path.exists('tcc_osm.json'):
     tees = [P(e, 6) for e in els if e['tags'].get('golf') == 'tee' and P(e)]
     bunkers = [P(e) for e in els if e['tags'].get('golf') == 'bunker' and P(e)]
     water = [P(e, 6) for e in els if (e['tags'].get('golf') in ('water_hazard', 'lateral_water_hazard') or e['tags'].get('natural') == 'water') and P(e)]
-    water.append([[33.003195, -97.176844], [33.003388, -97.176568], [33.003465, -97.17631], [33.003205, -97.176327], [33.002819, -97.176431], [33.002434, -97.176534], [33.00212, -97.17658], [33.002039, -97.176672], [33.002337, -97.176729], [33.002713, -97.176786], [33.002916, -97.176763]])  # Whitworth 15 greenside pond, missing from OSM; traced from Esri imagery
+    water.append([[33.003195, -97.176844], [33.003388, -97.176568], [33.003465, -97.17631], [33.003205, -97.176327], [33.002819, -97.176431], [33.002434, -97.176534], [33.00212, -97.17658], [33.002039, -97.176672], [33.002337, -97.176729], [33.002713, -97.176786], [33.002916, -97.176763], [33.003195, -97.176844]])  # Whitworth 15 greenside pond, missing from OSM; traced from Esri imagery (closed ring)
     fairways = [P(e, 5) for e in els if e['tags'].get('golf') == 'fairway' and P(e)]
     wl = [e for e in els if e['tags'].get('waterway') in WATERWAYS and not e['tags'].get('tunnel') and not e['tags'].get('culvert') and 'geometry' in e]
     waterlines = [densify(P(e)) for e in wl]; wl_types = [e['tags'].get('waterway') for e in wl]
@@ -191,6 +191,8 @@ if os.path.exists('tcc_osm.json'):
     if '18' in tr.get('Hogan', {}): hog.append(traced('Hogan', 18))
     if len(hog) == 18: build_course('Hogan', hog, 'tcc')
     if len(tr.get('Whitworth', {})) == 18: build_course('Whitworth', [traced('Whitworth', n) for n in range(1, 19)], 'tcc')
+    if 'Hogan' not in out['courses'] or 'Whitworth' not in out['courses']:
+        sys.exit('Trophy Club inputs are present but the courses did not build (Hogan %d holes, Whitworth %d traced): refusing to write course.json without them' % (len(hog), len(tr.get('Whitworth', {}))))
 
 # ---- elevation raster (USGS 3DEP) -> dem.bin (uint16 cm above 130 m, row 0 = north) ----
 from PIL import Image
@@ -199,6 +201,7 @@ W=660
 a=np.array(Image.open('dem.tif'),dtype=np.float32)
 im=Image.fromarray(a).resize((W,W),Image.BILINEAR)
 b=np.array(im,dtype=np.float32)
+assert a.shape[0] >= 500 and 100 < float(b.min()) and float(b.max()) < 300, ('dem.tif looks wrong (nodata or garbage), not writing dem.bin', a.shape, float(b.min()), float(b.max()))
 cm=np.clip(np.round((b-130.0)*100),0,65535).astype('<u2')
 cm.tofile('dem.bin')
 out['dem']={'n':32.875,'s':32.845,'w':-97.075,'e':-97.040,'cols':W,'rows':W,'base':130.0,'scale':0.01,'units':'m'}
@@ -207,10 +210,13 @@ out['clubs'] = {
   'bc': {'name': 'Bear Creek Golf Club', 'short': 'Bear Creek', 'place': 'DFW Airport, TX', 'addr': '3500 Bear Creek Ct, DFW Airport, TX',
          'phone': '972-456-3200', 'courses': ['West', 'East'], 'dem': dict(out['dem'], file='dem.bin')}}
 TCC_DEM = {'n': 33.016, 's': 32.988, 'w': -97.210, 'e': -97.165, 'cols': 840, 'rows': 620, 'base': 150.0, 'scale': 0.01, 'units': 'm'}
+if 'Hogan' in out['courses'] and not (os.path.exists('dem_tcc.tif') or os.path.exists('dem_tcc.bin')):
+    sys.exit('Trophy Club courses built but no dem_tcc.tif / dem_tcc.bin: refusing to drop the club silently')
 if 'Hogan' in out['courses'] and (os.path.exists('dem_tcc.tif') or os.path.exists('dem_tcc.bin')):
     if os.path.exists('dem_tcc.tif'):  # fresh lidar; otherwise keep the committed dem_tcc.bin
         a = np.array(Image.open('dem_tcc.tif'), dtype=np.float32)
         b = np.array(Image.fromarray(a).resize((TCC_DEM['cols'], TCC_DEM['rows']), Image.BILINEAR), dtype=np.float32)
+        assert 100 < float(b.min()) and float(b.max()) < 300, ('dem_tcc.tif looks wrong, keeping the committed dem_tcc.bin', float(b.min()), float(b.max()))
         np.clip(np.round((b - TCC_DEM['base']) * 100), 0, 65535).astype('<u2').tofile('dem_tcc.bin')
         print('dem tcc', b.min(), b.max(), file=sys.stderr)
     out['clubs']['tcc'] = {'name': 'Trophy Club Country Club', 'short': 'Trophy Club', 'place': 'Trophy Club, TX',
@@ -241,11 +247,21 @@ def green_grid(g):
         except Exception as ex:
             time.sleep(3)
     return None
-ok = 0
+ok = 0; kept = 0
+prev = {}  # last committed grids: a USGS hiccup on one green must not drop its slope view
+try:
+    for cn, cd in json.load(open('course.json'))['courses'].items():
+        for h in cd['holes']:
+            if h.get('gz'): prev[(cn, h['n'])] = h['gz']
+except Exception: pass
 for cname, cdata in out['courses'].items():
+    set_origin(33.0, -97.19) if cdata['club'] == 'tcc' else set_origin(32.86, -97.06)  # grid cell size from the club's own latitude
     for h in cdata['holes']:
         gz = green_grid(h['green'])
         if gz: h['gz'] = gz; ok += 1
-print('green grids', ok, file=sys.stderr)
+        elif (cname, h['n']) in prev: h['gz'] = prev[(cname, h['n'])]; kept += 1
+print('green grids', ok, 'fresh,', kept, 'kept from the last build', file=sys.stderr)
+total = sum(len(c['holes']) for c in out['courses'].values())
+if ok + kept < total: print('WARNING: %d holes have no green grid' % (total - ok - kept), file=sys.stderr)
 json.dump(out, open('course.json', 'w'), separators=(',', ':'))
 print('course.json', os.path.getsize('course.json'), file=sys.stderr)
