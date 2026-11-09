@@ -190,13 +190,16 @@ function elevAt(p) { // feet
 /* ---------------- weather + plays-like ---------------- */
 const WX_TTL = 2 * 60e3; // refresh every 2 minutes
 let wxModel = null, wxObs = null, wxLoading = false;
+// nearest NWS station per club: [id, label, station elevation ft for sea-level -> station pressure]
+const WX_STN = {bc: ['KDFW', 'DFW Airport', 560], tcc: ['KAFW', 'Fort Worth Alliance', 690]};
+function wxStn() { return WX_STN[clubOf(course())] || WX_STN.bc; }
 function combineWx() {
-  const obsFresh = wxObs && Date.now() - wxObs.ts < 40 * 60e3;
+  const obsFresh = wxObs && wxObs.stn === wxStn()[0] && Date.now() - wxObs.ts < 40 * 60e3;
   if (!wxModel && !obsFresh) return;
   const cur = obsFresh ? Object.assign({}, wxModel ? wxModel.current : {}, wxObs.current) : wxModel.current;
   if (cur.apparent_temperature == null) cur.apparent_temperature = cur.temperature_2m;
   wx = {current: cur, hourly: wxModel && wxModel.hourly, daily: wxModel && wxModel.daily,
-        src: obsFresh ? 'DFW Airport (measured)' : 'Open-Meteo model', obsTs: obsFresh ? wxObs.ts : (wxModel && wxModel.ts)};
+        src: obsFresh ? wxStn()[1] + ' (measured)' : 'Open-Meteo model', obsTs: obsFresh ? wxObs.ts : (wxModel && wxModel.ts)};
 }
 async function loadWx(force) {
   if (wxLoading || (!force && wx && Date.now() - wxTs < WX_TTL)) return;
@@ -217,18 +220,19 @@ async function loadWx(force) {
   if (ae && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) { renderHeader(); return; }
   if (S && (tab === 'hole' || tab === 'info')) render(); else if (tab === 'info') render(); else renderHeader();
 }
-async function loadNWS() { // DFW Airport (KDFW) live observation, ~1 mile from the course
+async function loadNWS() { // live observation from the club's nearest NWS station (KDFW for Bear Creek, KAFW for Trophy Club)
+  const [stn, , stnFt] = wxStn();
   try {
-    const p = (await (await fetch('https://api.weather.gov/stations/KDFW/observations/latest', {cache: 'no-store'})).json()).properties;
+    const p = (await (await fetch(`https://api.weather.gov/stations/${stn}/observations/latest`, {cache: 'no-store'})).json()).properties;
     const v = o => o && o.value != null ? o.value : null, mph = x => x == null ? null : x / 1.609;
     const t = v(p.temperature); if (t == null) return;
     const ws = mph(v(p.windSpeed)) || 0, pr = v(p.barometricPressure);
     const cur = {temperature_2m: t * 9 / 5 + 32, wind_speed_10m: ws, wind_direction_10m: v(p.windDirection) || 0, wind_gusts_10m: mph(v(p.windGust)) || ws};
     if (v(p.relativeHumidity) != null) cur.relative_humidity_2m = Math.round(v(p.relativeHumidity));
-    if (pr) cur.surface_pressure = pr / 100 - 20; // sea-level → ~560 ft station pressure
+    if (pr) cur.surface_pressure = pr / 100 - stnFt / 27.3; // sea-level → station pressure (~1 hPa per 27 ft)
     if (cur.relative_humidity_2m == null && !(wxModel && wxModel.current)) cur.relative_humidity_2m = 50;
     if (cur.surface_pressure == null && !(wxModel && wxModel.current)) cur.surface_pressure = 995;
-    wxObs = {current: cur, ts: new Date(p.timestamp).getTime()};
+    wxObs = {current: cur, ts: new Date(p.timestamp).getTime(), stn};
   } catch (e) {}
 }
 function wxAge() { if (!wx) return ''; const s = Math.round((Date.now() - wxTs) / 1000); return `Live · ${wx.src} as of ${fmtClock(wx.obsTs)} · checked ${s < 60 ? s + 's' : Math.round(s / 60) + 'm'} ago`; }
@@ -930,7 +934,9 @@ function renderSetup() {
   <div class="card small mut">Tip: open this once on Wi-Fi before the round, then in Safari tap Share → <b>Add to Home Screen</b> so it opens full-screen. Allow location when asked.</div>`;
 }
 function setCourse(cn) { // callers re-render; switching club loads that club's elevation grid
+  const was = clubOf(pref.course);
   pref.course = cn; pref.tee = validTee(cn, pref.tee); savePref(); loadDEM();
+  if (clubOf(cn) !== was) { combineWx(); loadWx(true); } // new club: its own weather station
 }
 function pickClub(k) { const cs = coursesOfClub(k); if (cs.length) { setCourse(cs[0]); render(); } }
 function startRound() {

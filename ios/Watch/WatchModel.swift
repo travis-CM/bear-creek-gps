@@ -62,7 +62,7 @@ final class WatchModel: NSObject, ObservableObject, CLLocationManagerDelegate, W
         loadData()
         course = UserDefaults.standard.string(forKey: "course") ?? "West"
         club = UserDefaults.standard.string(forKey: "club") ?? "bc"
-        let h =UserDefaults.standard.integer(forKey: "hole")
+        let h = UserDefaults.standard.integer(forKey: "hole")
         hole = (1...18).contains(h) ? h : 1
         updateLabel()
     }
