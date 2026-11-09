@@ -17,7 +17,7 @@ Show all times in US Central. Keep replies short.
 - `build.py` — builds course data from `osm.json` / `water.json`.
 - `ios/` — native app source: `iOS/`, `Watch/`, `WatchWidget/`, `Live/` (Live Activity), `Shared/`, `project.yml` (XcodeGen).
 - `bundle.json` — packed app source the iOS workflow unpacks.
-- `.github/workflows/ios.yml` — builds and uploads to TestFlight when `bundle.json` changes. `osm.yml` — "Fetch course map data".
+- `.github/workflows/ios.yml` — builds and uploads to TestFlight when `bundle.json` changes. `osm.yml` — "Build course app" (course data + commit).
 - `docs/progress.md`, `docs/decisions.md`, `docs/known-issues.md` — where we are, what's settled, gotchas.
 - `.claude/agents/` — Haiku workers. `.claude/skills/` — one folder per repeatable task.
 
