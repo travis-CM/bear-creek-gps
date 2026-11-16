@@ -26,3 +26,6 @@ Show all times in US Central. Keep replies short.
 - Credit data sources as the README does (OpenStreetMap, Esri, USGS 3DEP, Open-Meteo, GolfPass).
 - Never commit App Store Connect keys; they live in GitHub secrets.
 - Web-app check before any commit touching app.js, sw.js or index.html: serve the repo on port 8766, then `node tests/verify.js` (headless Chromium scenarios). Syntax checks alone are not enough.
+
+## Every task
+Before every task, load the `fable-playbook` skill (`.claude/skills/fable-playbook/SKILL.md`) and follow it: plan, break into steps, check before saying done. Where it and this file differ, this file wins.
