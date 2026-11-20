@@ -17,7 +17,7 @@ struct BearCreekGPSApp: App {
                 }
         }
         .onChange(of: phase) { _, newPhase in
-            if newPhase == .active { bridge.announce() }
+            if newPhase == .active { bridge.beginUpdates(); bridge.announce() }
         }
     }
 }

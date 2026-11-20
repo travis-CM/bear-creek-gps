@@ -34,12 +34,26 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
         lm.activityType = .fitness
         lm.pausesLocationUpdatesAutomatically = false
         lm.requestWhenInUseAuthorization()
+        beginUpdates()   // already allowed: iOS sends no authorization change, so start here too
+    }
+
+    /// Start GPS if Location is allowed. Safe to call repeatedly (launch, foreground, permission change).
+    func beginUpdates() {
+        let st = lm.authorizationStatus
+        guard st == .authorizedWhenInUse || st == .authorizedAlways else { return }
+        lm.allowsBackgroundLocationUpdates = true
+        lm.showsBackgroundLocationIndicator = true
+        applyGPSMode()
+        lm.startUpdatingLocation()
     }
 
     // MARK: - Location
-    /// Phone GPS at full power only when it is the chosen source; with the Watch as source the phone just idles as a fallback.
+    /// Phone GPS at full power unless Watch fixes are actually arriving (Watch chosen and heard from in the last 20 s).
+    private var lowPower = false
     private func applyGPSMode() {
-        if source == "phone" {
+        let watchLive = source == "watch" && (lastWatchFix.map { Date().timeIntervalSince($0) < 20 } ?? false)
+        lowPower = watchLive
+        if !watchLive {
             lm.desiredAccuracy = kCLLocationAccuracyBest
             lm.distanceFilter = 3
         } else {
@@ -51,9 +65,7 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         switch manager.authorizationStatus {
         case .authorizedWhenInUse, .authorizedAlways:
-            manager.allowsBackgroundLocationUpdates = true
-            manager.showsBackgroundLocationIndicator = true
-            manager.startUpdatingLocation()
+            beginUpdates()
         case .denied, .restricted:
             js("window.bcNative && window.bcNative.err('Location is off for GolfHub. Turn it on in Settings.')")
         default:
@@ -65,6 +77,7 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
         guard let l = locations.last, l.horizontalAccuracy >= 0, l.horizontalAccuracy <= 100,
               abs(l.timestamp.timeIntervalSinceNow) < 15 else { return }
         let watchStale = lastWatchFix.map { Date().timeIntervalSince($0) > 20 } ?? true
+        if lowPower && watchStale { applyGPSMode() }   // the Watch went quiet: phone back to full power
         if source == "phone" || watchStale {
             sendLocation(l.coordinate.latitude, l.coordinate.longitude, l.horizontalAccuracy, "phone")
         }
@@ -187,6 +200,7 @@ final class Bridge: NSObject, ObservableObject, CLLocationManagerDelegate, WCSes
         let acc = (message["acc"] as? NSNumber)?.doubleValue ?? 10
         DispatchQueue.main.async {
             self.lastWatchFix = Date()
+            if self.source == "watch" && !self.lowPower { self.applyGPSMode() }   // Watch is live: phone can idle
             if self.source == "watch" { self.sendLocation(lat, lon, acc, "watch") }
         }
     }
